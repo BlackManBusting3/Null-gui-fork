@@ -216,7 +216,6 @@ local function disableEnemyEntity(entity)
     end
 end
 
--- Fallback/compatibility layout adapter for your custom disable routines
 local function disableEnemy(name, destroy, breakAI, disableAI)
     local target = enemies and enemies:FindFirstChild(name)
     if not target then return false end
@@ -450,10 +449,8 @@ EnemyActionGroup:AddButton({
     end
 })
 
--- Detailed Individual Config Groupbox using Obsidian AddDivider
 local DetailedEnemyGroup = Tabs.Enemies:AddLeftGroupbox("Granular Enemy Options")
 
--- Global continuous connection listener for enemy spawns matching configured rules
 connections["GranularEnemies"] = RunService.Heartbeat:Connect(function()
     if not enemies then return end
     for _, enemy in ipairs(enemies:GetChildren()) do
@@ -866,6 +863,7 @@ local pingLabel = DebugGroup:AddLabel("Ping: Fetching...")
 local clientFpsLabel = DebugGroup:AddLabel("Client FPS: Fetching...")
 local serverFpsLabel = DebugGroup:AddLabel("Server FPS: Fetching...")
 local locationLabel = DebugGroup:AddLabel("Server Region: Fetching...")
+local uptimeLabel = DebugGroup:AddLabel("Server Uptime: Fetching...")
 
 -- Client FPS Tracker
 local clientFPS = 0
@@ -903,6 +901,19 @@ task.spawn(function()
     end
 end)
 
+local function formatUptime(seconds)
+    local totalSeconds = math.floor(seconds)
+    local hours = math.floor(totalSeconds / 3600)
+    local minutes = math.floor((totalSeconds % 3600) / 60)
+    local secs = totalSeconds % 60
+
+    if hours > 0 then
+        return string.format("%d:%02d:%02d", hours, minutes, secs)
+    else
+        return string.format("%d:%02d", minutes, secs)
+    end
+end
+
 local function getDebugData()
     local currentPlayers = Players:GetPlayers()
     local playerCount = #currentPlayers
@@ -910,6 +921,7 @@ local function getDebugData()
     
     local ping = math.round(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
     local serverFPS = math.round(workspace:GetRealPhysicsFPS())
+    local uptimeSeconds = workspace.DistributedGameTime
     
     return {
         Players = string.format("%d/%d", playerCount, maxPlayers),
@@ -917,6 +929,7 @@ local function getDebugData()
         ClientFPS = math.round(clientFPS),
         ServerFPS = serverFPS,
         Location = serverLocation,
+        Uptime = formatUptime(uptimeSeconds),
         PlayerList = currentPlayers
     }
 end
@@ -929,6 +942,7 @@ local function refreshDebugInfo(notify)
     clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS)
     serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS)
     locationLabel:SetText("Server Region: " .. data.Location)
+    uptimeLabel:SetText("Server Uptime: " .. data.Uptime)
     
     print("======== SERVER INFO ========")
     print("Server Size: " .. data.Players)
@@ -936,6 +950,7 @@ local function refreshDebugInfo(notify)
     print("Client FPS: " .. data.ClientFPS)
     print("Server FPS: " .. data.ServerFPS)
     print("Server Region: " .. data.Location)
+    print("Server Uptime: " .. data.Uptime)
     print("-----------------------------")
     for _, player in ipairs(data.PlayerList) do
         print(string.format("Username: %s | Display Name: %s", player.Name, player.DisplayName))
@@ -955,13 +970,14 @@ DebugGroup:AddButton({
 })
 
 task.spawn(function()
-    while task.wait(1.5) do
+    while task.wait(1) do
         local data = getDebugData()
         playerLabel:SetText("Players: " .. data.Players)
         pingLabel:SetText("Ping: " .. data.Ping)
         clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS)
         serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS)
         locationLabel:SetText("Server Region: " .. data.Location)
+        uptimeLabel:SetText("Server Uptime: " .. data.Uptime)
     end
 end)
 
