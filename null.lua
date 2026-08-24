@@ -90,13 +90,57 @@ local disableAllEnemies = false
 local disableClientEnemies = false
 local autoDestroySpawns = false
 
--- Individual enemy states tracker
-local disabledIndividualEnemies = {
-    Kolona = false,
-    Voidbreaker = false,
+-- Advanced Auto Enemy Tables
+local auto_disable = {
+    Bell = false,
+    Mart = false,
     Skinwalker = false,
+    Springer = false,
+    Baby = false,
+    Flesh = false,
+    nilEnemy = false,
+    nilMirage = false,
+    Telefragger = false,
+    ShadowBaby = false,
+    Cadence = false,
+}
+
+local auto_break = {
+    Bell = false,
+    Mart = false,
+    Skinwalker = false,
+    Springer = false,
+    ICBM = false,
+    Baby = false,
+    Flesh = false,
+    nilEnemy = false,
+    nilMirage = false,
+    Telefragger = false,
+    ShadowBaby = false,
+    Celestial = false,
+    Cadence = false,
+}
+
+local auto_destroy = {
+    Bell = false,
+    Mart = false,
+    Skinwalker = false,
+    Springer = false,
+    ICBM = false,
+    Baby = false,
+    Flesh = false,
     Operator = false,
+    Kolona = false,
+    nilEnemy = false,
+    nilMirage = false,
+    Telefragger = false,
+    Sigil = false,
+    ShadowBaby = false,
+    Voidbreaker = false,
+    Cadence = false,
     Scrapmaw = false,
+    RealityBreak = false,
+    Celestial = false,
 }
 
 local tweening = false
@@ -155,7 +199,6 @@ local mb
 local function disableEnemyEntity(entity)
     if not entity or not entity:IsA("Model") then return end
     
-    -- Disable humanoids and AI scripts inside the enemy model
     local humanoid = entity:FindFirstChildOfClass("Humanoid")
     if humanoid then
         humanoid:ChangeState(Enum.HumanoidStateType.Physics)
@@ -170,6 +213,68 @@ local function disableEnemyEntity(entity)
             obj.CanCollide = false
             obj.Anchored = true
         end
+    end
+end
+
+-- Fallback/compatibility layout adapter for your custom disable routines
+local function disableEnemy(name, destroy, breakAI, disableAI)
+    local target = enemies and enemies:FindFirstChild(name)
+    if not target then return false end
+    
+    if destroy then
+        target:Destroy()
+        return true
+    elseif breakAI or disableAI then
+        disableEnemyEntity(target)
+        return true
+    end
+    return false
+end
+
+local function handleEnemy(enemy)
+    if not enemy then return end
+    local name = enemy.Name
+    local waitingTime = 25
+
+    if name == "ICBM" or name == "Telefragger" or name:find("Baby") then
+        waitingTime = 75
+    end
+
+    if auto_destroy[name] then
+        local start = tick()
+        local didDestroy
+
+        repeat
+            if tick() - start >= waitingTime then break end
+            didDestroy = disableEnemy(name, true, false, false)
+            task.wait(.2)
+        until didDestroy == true
+    elseif auto_break[name] then
+        if name == "Mart" and curses and curses:FindFirstChild("MartSlide") and notifOn then
+            Library:Notify("Destroy Mart instead of breaking.", 3)
+        end
+
+        local start = tick()
+        local didBreak
+
+        repeat
+            if tick() - start >= waitingTime then break end
+            didBreak = disableEnemy(name, false, true, false)
+            task.wait(.2)
+        until didBreak == true
+    elseif auto_disable[name] then
+        if name == "Mart" and curses and curses:FindFirstChild("MartSlide") and notifOn then
+            Library:Notify("Destroy Mart instead of disabling.", 3)
+        end
+
+        local start = tick()
+        local didDisable
+
+        repeat
+            if tick() - start >= waitingTime then break end
+            didDisable = disableEnemy(name, false, false, true)
+            task.wait(.2)
+        until didDisable == true
     end
 end
 
@@ -296,7 +401,7 @@ PlayerGroup:AddButton({
 })
 
 --------------------------------------------------------------------
--- Enemies Tab (AI & Entity Controls)
+-- Enemies Tab (Granular & Automated Controls)
 --------------------------------------------------------------------
 local EnemyControlGroup = Tabs.Enemies:AddLeftGroupbox("AI & Entity Disabler")
 
@@ -328,89 +433,6 @@ EnemyControlGroup:AddToggle("DisableAllEnemies", {
     end
 })
 
-EnemyControlGroup:AddToggle("DisableClientEnemies", {
-    Text = "Target Specific Client Enemies",
-    Default = false,
-    Callback = function(Value)
-        disableClientEnemies = Value
-        if Value then
-            connections["ClientEnemies"] = RunService.Heartbeat:Connect(function()
-                if not disableClientEnemies or not enemies then return end
-                for _, enemy in ipairs(enemies:GetChildren()) do
-                    if table.find(clientenemies, enemy.Name) then
-                        disableEnemyEntity(enemy)
-                    end
-                end
-            end)
-            Library:Notify("Filtering client enemies (" .. table.concat(clientenemies, ", ") .. ")", 3)
-        else
-            if connections["ClientEnemies"] then
-                connections["ClientEnemies"]:Disconnect()
-                connections["ClientEnemies"] = nil
-            end
-        end
-    end
-})
-
-EnemyControlGroup:AddToggle("AutoDestroySpawns", {
-    Text = "Auto Clear Destroy Folder Spawns",
-    Default = false,
-    Callback = function(Value)
-        autoDestroySpawns = Value
-        if Value and destroyFolder then
-            connections["DestroyFolder"] = destroyFolder.ChildAdded:Connect(function(child)
-                if autoDestroySpawns then
-                    task.wait(0.05)
-                    child:Destroy()
-                end
-            end)
-            for _, child in ipairs(destroyFolder:GetChildren()) do
-                child:Destroy()
-            end
-            Library:Notify("Auto-clear active for destroy folder.", 3)
-        else
-            if connections["DestroyFolder"] then
-                connections["DestroyFolder"]:Disconnect()
-                connections["DestroyFolder"] = nil
-            end
-        end
-    end
-})
-
--- Individual Enemy Disablers Group
-local IndividualEnemyGroup = Tabs.Enemies:AddRightGroupbox("Individual Enemy Controls")
-
--- Connection loop for individual enemies
-connections["IndividualEnemies"] = RunService.Heartbeat:Connect(function()
-    if not enemies then return end
-    for _, enemy in ipairs(enemies:GetChildren()) do
-        if disabledIndividualEnemies[enemy.Name] then
-            disableEnemyEntity(enemy)
-        end
-    end
-end)
-
-for _, enemyName in ipairs(clientenemies) do
-    IndividualEnemyGroup:AddToggle("Disable_" .. enemyName, {
-        Text = "Disable " .. enemyName,
-        Default = false,
-        Callback = function(Value)
-            disabledIndividualEnemies[enemyName] = Value
-            if Value and enemies then
-                -- Instantly disable existing instances of this specific enemy
-                for _, enemy in ipairs(enemies:GetChildren()) do
-                    if enemy.Name == enemyName then
-                        disableEnemyEntity(enemy)
-                    end
-                end
-                Library:Notify("Individual AI disabled: " .. enemyName, 2)
-            else
-                Library:Notify("Individual AI re-enabled: " .. enemyName, 2)
-            end
-        end
-    })
-end
-
 local EnemyActionGroup = Tabs.Enemies:AddRightGroupbox("Actions & Utilities")
 
 EnemyActionGroup:AddButton({
@@ -425,6 +447,369 @@ EnemyActionGroup:AddButton({
     Text = "Refresh Target List",
     Func = function()
         Library:Notify("Refreshed active enemy cache.", 2)
+    end
+})
+
+-- Detailed Individual Config Groupbox using Obsidian AddDivider
+local DetailedEnemyGroup = Tabs.Enemies:AddLeftGroupbox("Granular Enemy Options")
+
+-- Global continuous connection listener for enemy spawns matching configured rules
+connections["GranularEnemies"] = RunService.Heartbeat:Connect(function()
+    if not enemies then return end
+    for _, enemy in ipairs(enemies:GetChildren()) do
+        handleEnemy(enemy)
+    end
+end)
+
+-- Bell
+DetailedEnemyGroup:AddDivider("Bell")
+DetailedEnemyGroup:AddToggle("Bell_Disable", {
+    Text = "Auto Disable",
+    Default = auto_disable.Bell,
+    Callback = function(v)
+        auto_disable.Bell = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Bell")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Bell_Break", {
+    Text = "Auto Break AI",
+    Default = auto_break.Bell,
+    Callback = function(v)
+        auto_break.Bell = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Bell")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Bell_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Bell,
+    Callback = function(v)
+        auto_destroy.Bell = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Bell")) end
+    end
+})
+
+-- Mart
+DetailedEnemyGroup:AddDivider("Mart")
+DetailedEnemyGroup:AddToggle("Mart_Disable", {
+    Text = "Auto Disable",
+    Default = auto_disable.Mart,
+    Callback = function(v)
+        auto_disable.Mart = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Mart")) end
+        if curses and curses:FindFirstChild("MartSlide") and notifOn then
+            Library:Notify("Destroy Mart instead of disabling.", 3)
+        end
+    end
+})
+DetailedEnemyGroup:AddToggle("Mart_Break", {
+    Text = "Auto Break AI",
+    Default = auto_break.Mart,
+    Callback = function(v)
+        auto_break.Mart = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Mart")) end
+        if curses and curses:FindFirstChild("MartSlide") and notifOn then
+            Library:Notify("Destroy Mart instead of breaking.", 3)
+        end
+    end
+})
+DetailedEnemyGroup:AddToggle("Mart_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Mart,
+    Callback = function(v)
+        auto_destroy.Mart = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Mart")) end
+    end
+})
+
+-- Husk (Skinwalker)
+DetailedEnemyGroup:AddDivider("Husk")
+DetailedEnemyGroup:AddToggle("Skinwalker_Disable", {
+    Text = "Auto Disable",
+    Default = auto_disable.Skinwalker,
+    Callback = function(v)
+        auto_disable.Skinwalker = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Skinwalker")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Skinwalker_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Skinwalker,
+    Callback = function(v)
+        auto_destroy.Skinwalker = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Skinwalker")) end
+    end
+})
+
+-- Springer
+DetailedEnemyGroup:AddDivider("Springer")
+DetailedEnemyGroup:AddToggle("Springer_Disable", {
+    Text = "Auto Disable Shockwaves",
+    Default = auto_disable.Springer,
+    Callback = function(v)
+        auto_disable.Springer = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Springer")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Springer_Break", {
+    Text = "Auto Break AI",
+    Default = auto_break.Springer,
+    Callback = function(v)
+        auto_break.Springer = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Springer")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Springer_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Springer,
+    Callback = function(v)
+        auto_destroy.Springer = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Springer")) end
+    end
+})
+
+-- ICBM
+DetailedEnemyGroup:AddDivider("ICBM")
+DetailedEnemyGroup:AddToggle("ICBM_Break", {
+    Text = "Auto Break AI",
+    Default = auto_break.ICBM,
+    Callback = function(v)
+        auto_break.ICBM = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("ICBM")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("ICBM_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.ICBM,
+    Callback = function(v)
+        auto_destroy.ICBM = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("ICBM")) end
+    end
+})
+
+-- Baby
+DetailedEnemyGroup:AddDivider("Baby")
+DetailedEnemyGroup:AddToggle("Baby_Disable", {
+    Text = "Auto Disable",
+    Default = auto_disable.Baby,
+    Callback = function(v)
+        auto_disable.Baby = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Baby")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Baby_Break", {
+    Text = "Auto Break AI",
+    Default = auto_break.Baby,
+    Callback = function(v)
+        auto_break.Baby = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Baby")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Baby_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Baby,
+    Callback = function(v)
+        auto_destroy.Baby = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Baby")) end
+    end
+})
+
+-- Flesh
+DetailedEnemyGroup:AddDivider("Flesh")
+DetailedEnemyGroup:AddToggle("Flesh_Disable", {
+    Text = "Auto Disable",
+    Default = auto_disable.Flesh,
+    Callback = function(v)
+        auto_disable.Flesh = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Flesh")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Flesh_Break", {
+    Text = "Auto Break AI",
+    Default = auto_break.Flesh,
+    Callback = function(v)
+        auto_break.Flesh = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Flesh")) end
+    end
+})
+DetailedEnemyGroup:AddDivider("Flesh_Destroy_Div")
+DetailedEnemyGroup:AddToggle("Flesh_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Flesh,
+    Callback = function(v)
+        auto_destroy.Flesh = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Flesh")) end
+    end
+})
+
+-- Guardian
+DetailedEnemyGroup:AddDivider("Guardian (CANNOT BE DISABLED)")
+DetailedEnemyGroup:AddToggle("Guardian_Protection", {
+    Text = "Create Protection",
+    Default = pb,
+    Callback = function(Value)
+        pb = Value
+        if not Value then
+            bulletprots:ClearAllChildren()
+        end
+    end
+})
+
+-- Operator & Kolona
+DetailedEnemyGroup:AddDivider("Operator")
+DetailedEnemyGroup:AddToggle("Operator_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Operator,
+    Callback = function(v)
+        auto_destroy.Operator = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Operator")) end
+    end
+})
+
+DetailedEnemyGroup:AddDivider("Kolona")
+DetailedEnemyGroup:AddToggle("Kolona_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Kolona,
+    Callback = function(v)
+        auto_destroy.Kolona = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Kolona")) end
+    end
+})
+
+-- Telefragger
+DetailedEnemyGroup:AddDivider("Telefragger")
+DetailedEnemyGroup:AddToggle("Telefragger_Disable", {
+    Text = "Auto Disable",
+    Default = auto_disable.Telefragger,
+    Callback = function(v)
+        auto_disable.Telefragger = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Telefragger")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Telefragger_Break", {
+    Text = "Auto Break AI",
+    Default = auto_break.Telefragger,
+    Callback = function(v)
+        auto_break.Telefragger = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Telefragger")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Telefragger_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Telefragger,
+    Callback = function(v)
+        auto_destroy.Telefragger = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Telefragger")) end
+    end
+})
+
+-- Sigil & Voidbreaker
+DetailedEnemyGroup:AddDivider("Sigil")
+DetailedEnemyGroup:AddToggle("Sigil_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Sigil,
+    Callback = function(v)
+        auto_destroy.Sigil = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Sigil")) end
+    end
+})
+
+DetailedEnemyGroup:AddDivider("Voidbreaker")
+DetailedEnemyGroup:AddToggle("Voidbreaker_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Voidbreaker,
+    Callback = function(v)
+        auto_destroy.Voidbreaker = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Voidbreaker")) end
+    end
+})
+
+-- Cadence
+DetailedEnemyGroup:AddDivider("Cadence")
+DetailedEnemyGroup:AddToggle("Cadence_Disable", {
+    Text = "Auto Disable",
+    Default = auto_disable.Cadence,
+    Callback = function(v)
+        auto_disable.Cadence = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Cadence")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Cadence_Break", {
+    Text = "Auto Break AI",
+    Default = auto_break.Cadence,
+    Callback = function(v)
+        auto_break.Cadence = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Cadence")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("Cadence_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Cadence,
+    Callback = function(v)
+        auto_destroy.Cadence = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Cadence")) end
+    end
+})
+
+-- Voidbound Baby (ShadowBaby)
+DetailedEnemyGroup:AddDivider("Voidbound Baby")
+DetailedEnemyGroup:AddToggle("ShadowBaby_Disable", {
+    Text = "Auto Disable",
+    Default = auto_disable.ShadowBaby,
+    Callback = function(v)
+        auto_disable.ShadowBaby = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("ShadowBaby")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("ShadowBaby_Break", {
+    Text = "Auto Break AI",
+    Default = auto_break.ShadowBaby,
+    Callback = function(v)
+        auto_break.ShadowBaby = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("ShadowBaby")) end
+    end
+})
+DetailedEnemyGroup:AddToggle("ShadowBaby_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.ShadowBaby,
+    Callback = function(v)
+        auto_destroy.ShadowBaby = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("ShadowBaby")) end
+    end
+})
+
+-- Scrapmaw & Reality Break
+DetailedEnemyGroup:AddDivider("Scrapmaw")
+DetailedEnemyGroup:AddToggle("Scrapmaw_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.Scrapmaw,
+    Callback = function(v)
+        auto_destroy.Scrapmaw = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("Scrapmaw")) end
+    end
+})
+
+DetailedEnemyGroup:AddDivider("Reality Break")
+DetailedEnemyGroup:AddToggle("RealityBreak_Destroy", {
+    Text = "Auto Destroy",
+    Default = auto_destroy.RealityBreak,
+    Callback = function(v)
+        auto_destroy.RealityBreak = v
+        if v then handleEnemy(enemies and enemies:FindFirstChild("RealityBreak")) end
+    end
+})
+
+DetailedEnemyGroup:AddToggle("Celestial_Break", {
+    Text = "Break Celestial AI",
+    Default = auto_break.Celestial,
+    Callback = function(v)
+        auto_break.Celestial = v
+    end
+})
+DetailedEnemyGroup:AddToggle("Celestial_Destroy", {
+    Text = "Destroy Celestial",
+    Default = auto_destroy.Celestial,
+    Callback = function(v)
+        auto_destroy.Celestial = v
     end
 })
 
@@ -546,7 +931,7 @@ local function refreshDebugInfo(notify)
     locationLabel:SetText("Server Region: " .. data.Location)
     
     print("======== SERVER INFO ========")
-    print("Server Size: " + data.Players)
+    print("Server Size: " .. data.Players)
     print("Ping: " .. data.Ping)
     print("Client FPS: " .. data.ClientFPS)
     print("Server FPS: " .. data.ServerFPS)
