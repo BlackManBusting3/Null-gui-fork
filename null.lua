@@ -399,7 +399,7 @@ local function collectGiftsEngine(isGoldenTarget)
                 failedAttempts += 1
 
                 if not isGoldenTarget then
-                    if failedAttempts >= 5 or #availableNormalGifts == 0 then
+                    if failedAttempts >= 2 or #availableNormalGifts == 0 then
                         if notifOn then notif("No normal gifts left. Switching to Golden Gifts.", "Collection System") end
                         
                         Settings.CollectNormal = false
