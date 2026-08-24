@@ -23,6 +23,7 @@ local CoreGui = game:GetService("CoreGui")
 local LogService = game:GetService("LogService")
 local TextService = game:GetService("TextService")
 local MarketplaceService = game:GetService("MarketplaceService")
+local PathfindingService = game:GetService("PathfindingService")
 
 local PlaceId, JobId = game.PlaceId, game.JobId 
 local plr = Players.LocalPlayer
@@ -51,12 +52,6 @@ end
 local events = ReplicatedStorage:WaitForChild("Events", 5) or ReplicatedStorage:FindFirstChild("Events")
 
 local Camera = workspace.CurrentCamera
-local spawnPart = workspace:FindFirstChild("Spawn")
-local items = workspace:FindFirstChild("Item_Pools")
-local gifts = items and items:FindFirstChild("Gift")
-local goldengifts = items and items:FindFirstChild("GoldenGift")
-local tripmines = items and items:FindFirstChild("Tripmine")
-local goldentripmines = items and items:FindFirstChild("GoldTripmines")
 local enemies = workspace:FindFirstChild("Enemies")
 local selection = workspace:FindFirstChild("Select")
 local collectGift = events and events:FindFirstChild("GiftCollected")
@@ -70,7 +65,6 @@ local enemiesFolder = ReplicatedStorage:FindFirstChild("EnemyFolder")
 local upgrades = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
 local beacons = workspace:FindFirstChild("Beacons")
 local destroyFolder = workspace:FindFirstChild("DestroyFolder")
-local bullets = items and items:FindFirstChild("Bullet")
 local counters = ReplicatedStorage:FindFirstChild("GiftCounters")
 local magnet = events and events:FindFirstChild("MovementGiftMagnet")
 
@@ -108,13 +102,17 @@ vpBox.Parent = velocityPart
 local Settings = {
     CollectNormal = false,
     CollectGolden = false,
+    LegitCollection = false,
+    LegitSpeed = 16,
     InstantTeleport = true, 
     TweenSpeed = 60,        
-    DelayBetweenGifts = 0.02
+    DelayBetweenGifts = 0.05,
+    AutoBeacon = false 
 }
 
 local tweening = false
 local currentTween = nil
+local activePath = nil
 local availableNormalGifts = {}
 local availableGoldenGifts = {}
 
@@ -152,9 +150,14 @@ local connections = {}
 local activeUpgrades = {}
 local upgradeValueGuards = {}
 local isSettingGuardValue = {}
+local blacklistedGifts = {} 
+
+local updateActiveUpgradesDisplay = function() end
+local applyUpgradeValue = function() end
+local upgradeLabels = {}
 
 --------------------------------------------------------------------
--- Helper Functions: Fast Gift Collection Engine
+-- Helper Functions: Fast Gift Collection Engine & Pathfinding
 --------------------------------------------------------------------
 local Library
 
@@ -176,8 +179,9 @@ local function refreshGifts(normal, golden)
     table.clear(availableNormalGifts)
     table.clear(availableGoldenGifts)
 
-    local normalFolder = gifts or workspace:FindFirstChild("Gifts") or workspace:FindFirstChild("SpawnedGifts")
-    local goldenFolder = goldengifts or normalFolder
+    local dynamicItems = workspace:FindFirstChild("Item_Pools")
+    local normalFolder = (dynamicItems and dynamicItems:FindFirstChild("Gift")) or workspace:FindFirstChild("Gifts") or workspace:FindFirstChild("SpawnedGifts")
+    local goldenFolder = (dynamicItems and dynamicItems:FindFirstChild("GoldenGift")) or normalFolder
 
     if normal and normalFolder then
         for _, gift in ipairs(normalFolder:GetChildren()) do
@@ -205,9 +209,14 @@ local function getClosestGift(giftList)
 
     local closest, shortestDist = nil, math.huge
     for _, gift in ipairs(giftList) do
-        if gift and gift.Parent then
+        if gift and gift.Parent and not blacklistedGifts[gift] then
             local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart")
             if part then
+                if part.Position == Vector3.new(0,0,0) or part.Position.Y < -500 or part.Position.Y > 3000 or part.Position.Magnitude > 30000 then
+                    blacklistedGifts[gift] = true
+                    continue
+                end
+
                 local dist = (part.Position - root.Position).Magnitude
                 if dist < shortestDist then
                     shortestDist = dist
@@ -219,22 +228,89 @@ local function getClosestGift(giftList)
     return closest
 end
 
+local function walkToPositionPathfinding(targetPos)
+    local char = getChar(plr)
+    local root = getRoot(char)
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+
+    if not root or not humanoid or not targetPos or targetPos == Vector3.new(0,0,0) then return false end
+
+    humanoid.WalkSpeed = Settings.LegitSpeed
+
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        AgentJumpHeight = 10,
+        AgentMaxSlope = 45
+    })
+
+    local success, err = pcall(function()
+        path:ComputeAsync(root.Position, targetPos)
+    end)
+
+    if success and path.Status == Enum.PathStatus.Success then
+        local waypoints = path:GetWaypoints()
+        for i, waypoint in ipairs(waypoints) do
+            if not tweening and not Settings.AutoBeacon then
+                humanoid:MoveTo(root.Position) 
+                return false
+            end
+
+            if waypoint.Action == Enum.PathWaypointAction.Jump then
+                humanoid.Jump = true
+            end
+
+            humanoid:MoveTo(waypoint.Position)
+
+            local moveCompleted = false
+            local conn = humanoid.MoveToFinished:Connect(function()
+                moveCompleted = true
+            end)
+
+            local timeout = 0
+            while not moveCompleted and (tweening or Settings.AutoBeacon) do
+                task.wait(0.05)
+                timeout += 0.05
+                if timeout > 3 then break end 
+            end
+
+            conn:Disconnect()
+            if not moveCompleted then break end
+        end
+        return true
+    else
+        humanoid:MoveTo(targetPos)
+        task.wait(0.5)
+        return false
+    end
+end
+
+local function walkToGiftPathfinding(targetGift)
+    local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart")
+    if not targetPart or targetPart.Position == Vector3.new(0,0,0) then return false end
+    return walkToPositionPathfinding(targetPart.Position)
+end
+
 local function moveToGift(targetGift)
+    if Settings.LegitCollection then
+        walkToGiftPathfinding(targetGift)
+        return nil
+    end
+
     local char = getChar(plr)
     local root = getRoot(char)
     local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart")
 
-    if not root or not targetPart then return nil end
+    if not root or not targetPart or targetPart.Position == Vector3.new(0,0,0) then return nil end
 
     local targetCFrame = targetPart.CFrame + Vector3.new(0, 3, 0)
 
-    -- Instant Teleport Mode (Zero Lag)
     if Settings.InstantTeleport then
         root.CFrame = targetCFrame
         return nil
     end
 
-    -- Fast Tween Mode
     local distance = (targetPart.Position - root.Position).Magnitude
     local duration = math.max(0.01, distance / Settings.TweenSpeed)
 
@@ -250,6 +326,46 @@ local function moveToGift(targetGift)
     return tween
 end
 
+local function handleSpawnNavigation()
+    local targetSpawn = workspace:FindFirstChild("Spawn") or workspace:FindFirstChild("SpawnLocation") or workspace:FindFirstChild("Beacons")
+    
+    if targetSpawn then
+        local part = targetSpawn:IsA("BasePart") and targetSpawn or targetSpawn:FindFirstChildWhichIsA("BasePart")
+        if part and part.Position ~= Vector3.new(0,0,0) then
+            local char = getChar(plr)
+            local root = getRoot(char)
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if root then
+                if Settings.LegitCollection then
+                    walkToPositionPathfinding(part.Position)
+                else
+                    root.CFrame = part.CFrame + Vector3.new(0, 15, 0)
+                end
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function stopAllCollection()
+    tweening = false
+    Settings.CollectNormal = false
+    Settings.CollectGolden = false
+    Settings.LegitCollection = false
+
+    if currentTween then
+        currentTween:Cancel()
+        currentTween = nil
+    end
+
+    if Options then
+        if Options.CollectNormalToggle then Options.CollectNormalToggle:SetValue(false) end
+        if Options.CollectGoldenToggle then Options.CollectGoldenToggle:SetValue(false) end
+        if Options.LegitCollectionToggle then Options.LegitCollectionToggle:SetValue(false) end
+    end
+end
+
 local function collectGiftsEngine(isGoldenTarget)
     if tweening then
         if notifOn then
@@ -259,54 +375,76 @@ local function collectGiftsEngine(isGoldenTarget)
     end
 
     tweening = true
+    table.clear(blacklistedGifts) 
+
     task.spawn(function()
+        local failedAttempts = 0
+
         while tweening do
             if isGoldenTarget and not Settings.CollectGolden then break end
             if not isGoldenTarget and not Settings.CollectNormal then break end
 
             local char = getChar(plr)
             local root = getRoot(char)
-            if root then root.AssemblyLinearVelocity = Vector3.new(0,0,0) end
+            if root and not Settings.LegitCollection then 
+                root.AssemblyLinearVelocity = Vector3.new(0,0,0) 
+            end
 
-            -- Always refresh every loop to instantly catch newly spawned gifts
             refreshGifts(not isGoldenTarget, isGoldenTarget)
 
             local targetPool = isGoldenTarget and availableGoldenGifts or availableNormalGifts
             local gift = getClosestGift(targetPool)
 
             if not gift then
-                if notifOn then
-                    notif(isGoldenTarget and "No golden gifts found." or "No normal gifts found.", "Gift Not Found")
+                failedAttempts += 1
+
+                if not isGoldenTarget then
+                    if failedAttempts >= 5 or #availableNormalGifts == 0 then
+                        if notifOn then notif("No normal gifts left. Switching to Golden Gifts.", "Collection System") end
+                        
+                        Settings.CollectNormal = false
+                        if Options and Options.CollectNormalToggle then Options.CollectNormalToggle:SetValue(false) end
+                        
+                        Settings.CollectGolden = true
+                        if Options and Options.CollectGoldenToggle then Options.CollectGoldenToggle:SetValue(true) end
+                        
+                        tweening = false
+                        task.defer(function() collectGiftsEngine(true) end)
+                        return
+                    end
+                else
+                    if notifOn then notif("No Golden Gifts remaining. Disabling gift collection.", "Collection System") end
+                    
+                    if Settings.AutoBeacon then
+                        handleSpawnNavigation()
+                    end
+                    
+                    stopAllCollection()
+                    break
                 end
-                task.wait(0.5) -- Small cooldown before retrying if out of gifts
+
+                task.wait(0.5) 
+                table.clear(blacklistedGifts) 
                 continue
             end
+
+            failedAttempts = 0
+            blacklistedGifts[gift] = true
 
             currentTween = moveToGift(gift)
             
             if currentTween then
                 currentTween.Completed:Wait()
-            else
-                -- Instantly jump to the next item without waiting for deletion
+            elseif not Settings.LegitCollection then
                 RunService.Heartbeat:Wait()
+            end
+            
+            if Settings.DelayBetweenGifts and Settings.DelayBetweenGifts > 0 then
+                task.wait(Settings.DelayBetweenGifts)
             end
         end
 
-        if currentTween then
-            currentTween:Cancel()
-            currentTween = nil
-        end
-
-        tweening = false
-        Settings.CollectNormal = false
-        Settings.CollectGolden = false
-        
-        if Options and Options.CollectNormalToggle then
-            Options.CollectNormalToggle:SetValue(false)
-        end
-        if Options and Options.CollectGoldenToggle then
-            Options.CollectGoldenToggle:SetValue(false)
-        end
+        stopAllCollection()
     end)
 end
 
@@ -314,7 +452,7 @@ end
 -- Helper Functions: AI & Entity Disablers
 --------------------------------------------------------------------
 local function disableEnemyEntity(entity)
-    if not entity or not entity:IsA("Model") then return end
+    if not entity or not (entity:IsA("Model") or entity:IsA("Folder") or entity:IsA("BasePart")) then return end
     
     local humanoid = entity:FindFirstChildOfClass("Humanoid")
     if humanoid then
@@ -345,6 +483,35 @@ local function disableEnemy(name, destroy, breakAI, disableAI)
         return true
     end
     return false
+end
+
+local function processClientSideEnemies()
+    local clientTargets = {"nilEnemy", "nilMirage"}
+    local destroyTargets = {"Kolona", "Operator", "scrapmaw", "skinwalker", "sigil"}
+    
+    local searchContainers = {
+        Camera,
+        enemies,
+        enemiesFolder
+    }
+
+    for _, container in ipairs(searchContainers) do
+        if container then
+            for _, child in ipairs(container:GetChildren()) do
+                for _, targetName in ipairs(clientTargets) do
+                    if child.Name:lower() == targetName:lower() then
+                        disableEnemyEntity(child)
+                    end
+                end
+                
+                for _, targetName in ipairs(destroyTargets) do
+                    if child.Name:lower() == targetName:lower() then
+                        child:Destroy()
+                    end
+                end
+            end
+        end
+    end
 end
 
 local function handleEnemy(enemy)
@@ -420,17 +587,14 @@ local Window = Library:CreateWindow({
 local Tabs = {}
 
 if isSupportedPlace then
-    ----------------------------------------------------------------
-    -- Supported Place Tabs (Game Specific)
-    ----------------------------------------------------------------
     Tabs.Playerlist = Window:AddTab("Main", "paw-print")
     Tabs.Enemies    = Window:AddTab("Enemies", "triangle-alert")
+    Tabs.Map        = Window:AddTab("Map", "map")
     Tabs.Music      = Window:AddTab("Music", "music")
     Tabs.Upgrades   = Window:AddTab("Upgrades", "shield-plus")
     Tabs.Debug      = Window:AddTab("Debug", "bug")
     Tabs.Settings   = Window:AddTab("Settings", "settings")
 
-    -- Main Features Tab
     local PlayerGroup = Tabs.Playerlist:AddLeftGroupbox("Main Features")
 
     PlayerGroup:AddButton({
@@ -445,7 +609,7 @@ if isSupportedPlace then
     --------------------------------------------------------------------
     local GiftGroup = Tabs.Playerlist:AddRightGroupbox("Gifts Collection")
 
-    GiftGroup:AddLabel("<font color='#AAAAAA'><b>NOTE:</b> Finding gifts can be slow\n Use Instant TP for max collection .</font>")
+    GiftGroup:AddLabel("<font color='#AAAAAA'><b>NOTE:</b> Finding gifts can be slow\n Use Instant TP for max collection.</font>")
 
     GiftGroup:AddToggle("CollectNormalToggle", {
         Text = "<font color='#AA55FF'>Collect Normal Gifts</font>",
@@ -462,8 +626,7 @@ if isSupportedPlace then
                 collectGiftsEngine(false)
             else
                 if not Settings.CollectGolden and tweening then
-                    tweening = false
-                    if currentTween then currentTween:Cancel() end
+                    stopAllCollection()
                 end
             end
         end
@@ -484,32 +647,53 @@ if isSupportedPlace then
                 collectGiftsEngine(true)
             else
                 if not Settings.CollectNormal and tweening then
-                    tweening = false
-                    if currentTween then currentTween:Cancel() end
+                    stopAllCollection()
                 end
             end
+        end
+    })
+
+    GiftGroup:AddToggle("LegitCollectionToggle", {
+        Text = "<font color='#FF4444'>Legit collection (slow)</font>",
+        Default = Settings.LegitCollection,
+        Tooltip = "Uses PathfindingService to naturally walk to gifts instead of teleporting or tweening.",
+        Callback = function(Value)
+            Settings.LegitCollection = Value
+            if Value then
+                Library:Notify("Legit Pathfinding Mode Enabled.", 2)
+            end
+        end
+    })
+
+    GiftGroup:AddInput("LegitSpeedInput", {
+        Default = tostring(Settings.LegitSpeed),
+        Numeric = true,
+        Finished = true,
+        Text = "Legit WalkSpeed",
+        Tooltip = "Walking speed while pathfinding to gifts.",
+        Placeholder = "16...",
+        Callback = function(Value)
+            local num = tonumber(Value)
+            if num and num > 0 then
+                Settings.LegitSpeed = num
+                Library:Notify("Legit Speed set to " .. tostring(num), 2)
+            end
+        end
+    })
+
+    GiftGroup:AddToggle("AutoBeaconToggle", {
+        Text = "<font color='#00FF00'>Walk/TP To Beacon On Finish</font>",
+        Default = Settings.AutoBeacon,
+        Tooltip = "Navigates back to Spawn when finished collecting.",
+        Callback = function(Value)
+            Settings.AutoBeacon = Value
         end
     })
 
     GiftGroup:AddButton({
         Text = "<font color='#FF4444'>Cancel Gift Collection</font>",
         Func = function()
-            tweening = false
-            Settings.CollectNormal = false
-            Settings.CollectGolden = false
-            
-            if currentTween then
-                currentTween:Cancel()
-                currentTween = nil
-            end
-
-            if Options and Options.CollectNormalToggle then
-                Options.CollectNormalToggle:SetValue(false)
-            end
-            if Options and Options.CollectGoldenToggle then
-                Options.CollectGoldenToggle:SetValue(false)
-            end
-
+            stopAllCollection()
             Library:Notify("Cancelled gift collection.", 2)
         end
     })
@@ -535,6 +719,22 @@ if isSupportedPlace then
             if num and num > 0 then
                 Settings.TweenSpeed = num
                 Library:Notify("Tween Speed set to " .. tostring(num), 2)
+            end
+        end
+    })
+
+    GiftGroup:AddInput("TeleportDelayInput", {
+        Default = tostring(Settings.DelayBetweenGifts),
+        Numeric = true,
+        Finished = true,
+        Text = "Teleport Delay (Seconds)",
+        Tooltip = "Delay between collecting each gift. Increase if you are getting kicked/glitched.",
+        Placeholder = "0.05...",
+        Callback = function(Value)
+            local num = tonumber(Value)
+            if num and num >= 0 then
+                Settings.DelayBetweenGifts = num
+                Library:Notify("Teleport Delay set to " .. tostring(num) .. "s", 2)
             end
         end
     })
@@ -566,6 +766,29 @@ if isSupportedPlace then
                     connections["DisableEnemies"] = nil
                 end
                 Library:Notify("Workspace Enemy AI re-enabled.", 3)
+            end
+        end
+    })
+
+    EnemyControlGroup:AddToggle("DisableClientEnemies", {
+        Text = "Disable all client sided enemies",
+        Default = false,
+        Callback = function(Value)
+            disableClientEnemies = Value
+            if Value then
+                processClientSideEnemies()
+                connections["DisableClientEnemies"] = RunService.Heartbeat:Connect(function()
+                    if disableClientEnemies then
+                        processClientSideEnemies()
+                    end
+                end)
+                Library:Notify("Client-sided enemies disabler activated.", 3)
+            else
+                if connections["DisableClientEnemies"] then
+                    connections["DisableClientEnemies"]:Disconnect()
+                    connections["DisableClientEnemies"] = nil
+                end
+                Library:Notify("Client-sided enemies disabler stopped.", 3)
             end
         end
     })
@@ -616,7 +839,6 @@ if isSupportedPlace then
         end
     })
 
-    -- Active Enemies Display Groupbox
     local ActiveEnemiesGroup = Tabs.Enemies:AddRightGroupbox("Active Enemies")
     local activeEnemiesLabel = ActiveEnemiesGroup:AddLabel("Scanning workspace...")
 
@@ -668,47 +890,39 @@ if isSupportedPlace then
         end)
     end
 
-    -- Bell
     DetailedEnemyGroup:AddDivider("Bell")
     DetailedEnemyGroup:AddToggle("Bell_Disable", { Text = "Auto Disable", Default = auto_disable.Bell, Callback = function(v) auto_disable.Bell = v if v then handleEnemy(enemies and enemies:FindFirstChild("Bell")) end end })
     DetailedEnemyGroup:AddToggle("Bell_Break", { Text = "Auto Break AI", Default = auto_break.Bell, Callback = function(v) auto_break.Bell = v if v then handleEnemy(enemies and enemies:FindFirstChild("Bell")) end end })
     DetailedEnemyGroup:AddToggle("Bell_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Bell, Callback = function(v) auto_destroy.Bell = v if v then handleEnemy(enemies and enemies:FindFirstChild("Bell")) end end })
 
-    -- Mart
     DetailedEnemyGroup:AddDivider("Mart")
     DetailedEnemyGroup:AddToggle("Mart_Disable", { Text = "Auto Disable", Default = auto_disable.Mart, Callback = function(v) auto_disable.Mart = v if v then handleEnemy(enemies and enemies:FindFirstChild("Mart")) end end })
     DetailedEnemyGroup:AddToggle("Mart_Break", { Text = "Auto Break AI", Default = auto_break.Mart, Callback = function(v) auto_break.Mart = v if v then handleEnemy(enemies and enemies:FindFirstChild("Mart")) end end })
     DetailedEnemyGroup:AddToggle("Mart_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Mart, Callback = function(v) auto_destroy.Mart = v if v then handleEnemy(enemies and enemies:FindFirstChild("Mart")) end end })
 
-    -- Husk (Skinwalker)
     DetailedEnemyGroup:AddDivider("Husk")
     DetailedEnemyGroup:AddToggle("Skinwalker_Disable", { Text = "Auto Disable", Default = auto_disable.Skinwalker, Callback = function(v) auto_disable.Skinwalker = v if v then handleEnemy(enemies and enemies:FindFirstChild("Skinwalker")) end end })
     DetailedEnemyGroup:AddToggle("Skinwalker_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Skinwalker, Callback = function(v) auto_destroy.Skinwalker = v if v then handleEnemy(enemies and enemies:FindFirstChild("Skinwalker")) end end })
 
-    -- Springer
     DetailedEnemyGroup:AddDivider("Springer")
     DetailedEnemyGroup:AddToggle("Springer_Disable", { Text = "Auto Disable Shockwaves", Default = auto_disable.Springer, Callback = function(v) auto_disable.Springer = v if v then handleEnemy(enemies and enemies:FindFirstChild("Springer")) end end })
     DetailedEnemyGroup:AddToggle("Springer_Break", { Text = "Auto Break AI", Default = auto_break.Springer, Callback = function(v) auto_break.Springer = v if v then handleEnemy(enemies and enemies:FindFirstChild("Springer")) end end })
     DetailedEnemyGroup:AddToggle("Springer_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Springer, Callback = function(v) auto_destroy.Springer = v if v then handleEnemy(enemies and enemies:FindFirstChild("Springer")) end end })
 
-    -- ICBM
     DetailedEnemyGroup:AddDivider("ICBM")
     DetailedEnemyGroup:AddToggle("ICBM_Break", { Text = "Auto Break AI", Default = auto_break.ICBM, Callback = function(v) auto_break.ICBM = v if v then handleEnemy(enemies and enemies:FindFirstChild("ICBM")) end end })
     DetailedEnemyGroup:AddToggle("ICBM_Destroy", { Text = "Auto Destroy", Default = auto_destroy.ICBM, Callback = function(v) auto_destroy.ICBM = v if v then handleEnemy(enemies and enemies:FindFirstChild("ICBM")) end end })
 
-    -- Baby
     DetailedEnemyGroup:AddDivider("Baby")
     DetailedEnemyGroup:AddToggle("Baby_Disable", { Text = "Auto Disable", Default = auto_disable.Baby, Callback = function(v) auto_disable.Baby = v if v then handleEnemy(enemies and enemies:FindFirstChild("Baby")) end end })
     DetailedEnemyGroup:AddToggle("Baby_Break", { Text = "Auto Break AI", Default = auto_break.Baby, Callback = function(v) auto_break.Baby = v if v then handleEnemy(enemies and enemies:FindFirstChild("Baby")) end end })
     DetailedEnemyGroup:AddToggle("Baby_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Baby, Callback = function(v) auto_destroy.Baby = v if v then handleEnemy(enemies and enemies:FindFirstChild("Baby")) end end })
 
-    -- Flesh
     DetailedEnemyGroup:AddDivider("Flesh")
     DetailedEnemyGroup:AddToggle("Flesh_Disable", { Text = "Auto Disable", Default = auto_disable.Flesh, Callback = function(v) auto_disable.Flesh = v if v then handleEnemy(enemies and enemies:FindFirstChild("Flesh")) end end })
     DetailedEnemyGroup:AddToggle("Flesh_Break", { Text = "Auto Break AI", Default = auto_break.Flesh, Callback = function(v) auto_break.Flesh = v if v then handleEnemy(enemies and enemies:FindFirstChild("Flesh")) end end })
     DetailedEnemyGroup:AddToggle("Flesh_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Flesh, Callback = function(v) auto_destroy.Flesh = v if v then handleEnemy(enemies and enemies:FindFirstChild("Flesh")) end end })
 
-    -- Guardian
     DetailedEnemyGroup:AddDivider("Guardian (CANNOT BE DISABLED)")
     DetailedEnemyGroup:AddToggle("Guardian_Protection", {
         Text = "Create Protection",
@@ -719,39 +933,33 @@ if isSupportedPlace then
         end
     })
 
-    -- Operator & Kolona
     DetailedEnemyGroup:AddDivider("Operator")
     DetailedEnemyGroup:AddToggle("Operator_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Operator, Callback = function(v) auto_destroy.Operator = v if v then handleEnemy(enemies and enemies:FindFirstChild("Operator")) end end })
 
     DetailedEnemyGroup:AddDivider("Kolona")
     DetailedEnemyGroup:AddToggle("Kolona_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Kolona, Callback = function(v) auto_destroy.Kolona = v if v then handleEnemy(enemies and enemies:FindFirstChild("Kolona")) end end })
 
-    -- Telefragger
     DetailedEnemyGroup:AddDivider("Telefragger")
     DetailedEnemyGroup:AddToggle("Telefragger_Disable", { Text = "Auto Disable", Default = auto_disable.Telefragger, Callback = function(v) auto_disable.Telefragger = v if v then handleEnemy(enemies and enemies:FindFirstChild("Telefragger")) end end })
     DetailedEnemyGroup:AddToggle("Telefragger_Break", { Text = "Auto Break AI", Default = auto_break.Telefragger, Callback = function(v) auto_break.Telefragger = v if v then handleEnemy(enemies and enemies:FindFirstChild("Telefragger")) end end })
     DetailedEnemyGroup:AddToggle("Telefragger_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Telefragger, Callback = function(v) auto_destroy.Telefragger = v if v then handleEnemy(enemies and enemies:FindFirstChild("Telefragger")) end end })
 
-    -- Sigil & Voidbreaker
     DetailedEnemyGroup:AddDivider("Sigil")
     DetailedEnemyGroup:AddToggle("Sigil_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Sigil, Callback = function(v) auto_destroy.Sigil = v if v then handleEnemy(enemies and enemies:FindFirstChild("Sigil")) end end })
 
     DetailedEnemyGroup:AddDivider("Voidbreaker")
     DetailedEnemyGroup:AddToggle("Voidbreaker_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Voidbreaker, Callback = function(v) auto_destroy.Voidbreaker = v if v then handleEnemy(enemies and enemies:FindFirstChild("Voidbreaker")) end end })
 
-    -- Cadence
     DetailedEnemyGroup:AddDivider("Cadence")
     DetailedEnemyGroup:AddToggle("Cadence_Disable", { Text = "Auto Disable", Default = auto_disable.Cadence, Callback = function(v) auto_disable.Cadence = v if v then handleEnemy(enemies and enemies:FindFirstChild("Cadence")) end end })
     DetailedEnemyGroup:AddToggle("Cadence_Break", { Text = "Auto Break AI", Default = auto_break.Cadence, Callback = function(v) auto_break.Cadence = v if v then handleEnemy(enemies and enemies:FindFirstChild("Cadence")) end end })
     DetailedEnemyGroup:AddToggle("Cadence_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Cadence, Callback = function(v) auto_destroy.Cadence = v if v then handleEnemy(enemies and enemies:FindFirstChild("Cadence")) end end })
 
-    -- Voidbound Baby (ShadowBaby)
     DetailedEnemyGroup:AddDivider("Voidbound Baby")
     DetailedEnemyGroup:AddToggle("ShadowBaby_Disable", { Text = "Auto Disable", Default = auto_disable.ShadowBaby, Callback = function(v) auto_disable.ShadowBaby = v if v then handleEnemy(enemies and enemies:FindFirstChild("ShadowBaby")) end end })
     DetailedEnemyGroup:AddToggle("ShadowBaby_Break", { Text = "Auto Break AI", Default = auto_break.ShadowBaby, Callback = function(v) auto_break.ShadowBaby = v if v then handleEnemy(enemies and enemies:FindFirstChild("ShadowBaby")) end end })
     DetailedEnemyGroup:AddToggle("ShadowBaby_Destroy", { Text = "Auto Destroy", Default = auto_destroy.ShadowBaby, Callback = function(v) auto_destroy.ShadowBaby = v if v then handleEnemy(enemies and enemies:FindFirstChild("ShadowBaby")) end end })
 
-    -- Scrapmaw & Reality Break
     DetailedEnemyGroup:AddDivider("Scrapmaw")
     DetailedEnemyGroup:AddToggle("Scrapmaw_Destroy", { Text = "Auto Destroy", Default = auto_destroy.Scrapmaw, Callback = function(v) auto_destroy.Scrapmaw = v if v then handleEnemy(enemies and enemies:FindFirstChild("Scrapmaw")) end end })
 
@@ -760,6 +968,58 @@ if isSupportedPlace then
 
     DetailedEnemyGroup:AddToggle("Celestial_Break", { Text = "Break Celestial AI", Default = auto_break.Celestial, Callback = function(v) auto_break.Celestial = v end })
     DetailedEnemyGroup:AddToggle("Celestial_Destroy", { Text = "Destroy Celestial", Default = auto_destroy.Celestial, Callback = function(v) auto_destroy.Celestial = v end })
+
+    --------------------------------------------------------------------
+    -- Map Tab
+    --------------------------------------------------------------------
+    local MapGroup = Tabs.Map:AddLeftGroupbox("Void")
+
+    local antiVoidSelection = 1
+    local av = false
+
+    MapGroup:AddToggle("AntiVoid", {
+        Text = "Anti Void",
+        Default = false,
+        Tooltip = "Toggles the Anti-Void feature",
+        Callback = function(Value)
+            av = Value
+        end
+    })
+
+    MapGroup:AddDropdown("AntiVoidSetting", {
+        Values = { "1. Teleport to Spawn", "2. Launch Up", "3. Closest Gift" },
+        Default = 1,
+        Multi = false,
+        Text = "Anti Void Setting",
+        Tooltip = "Select anti-void action",
+        Callback = function(Value)
+            antiVoidSelection = tonumber(string.split(Value, ".")[1])
+        end
+    })
+
+    local lp = 500
+    MapGroup:AddSlider("LaunchPower", {
+        Text = "Launch Power",
+        Default = 500,
+        Min = 10,
+        Max = 1000,
+        Rounding = 0,
+        Callback = function(Value)
+            lp = Value
+        end
+    })
+
+    MapGroup:AddToggle("VisibleVoid", {
+        Text = "Visible Void",
+        Default = false,
+        Tooltip = "Toggles KillVoid visibility",
+        Callback = function(Value)
+            local killVoid = workspace:FindFirstChild("KillVoid")
+            if killVoid then
+                killVoid.Transparency = Value and 0 or 1
+            end
+        end
+    })
 
     -- Music Tab
     local MusicGroup = Tabs.Music:AddLeftGroupbox("Playback")
@@ -770,6 +1030,10 @@ if isSupportedPlace then
     -- Upgrades Tab
     local upgradeTabLeft = Tabs.Upgrades:AddLeftGroupbox("Upgrades Status")
 
+    if upgradeTabLeft.Container then
+        upgradeTabLeft.Container.AutomaticSize = Enum.AutomaticSize.Y
+    end
+
     if fSignal then
         upgradeTabLeft:AddLabel("Your exploit can add upgrades.")
     else
@@ -779,8 +1043,6 @@ if isSupportedPlace then
     upgradeTabLeft:AddDivider("Active Upgrades List")
     local activeUpgradesLabel = upgradeTabLeft:AddLabel("None Active")
 
-    local upgradeListGroup = Tabs.Upgrades:AddRightGroupbox("Available Upgrades")
-
     local clientUpgrades = {
         "MatrixTetrahedron", "Adrenaline", "HighlightGifts", "AdvancedGravityCoil", "SportShoes",
         "TheOrb", "RealWings", "GraceWings", "RadarPlayer", "RadarInstruments", "HighlightTripmines",
@@ -788,7 +1050,7 @@ if isSupportedPlace then
         "NinjaBelt", "Helmet", "DoubleJump", "RadarAltars"
     }
 
-    local function updateActiveUpgradesDisplay()
+    updateActiveUpgradesDisplay = function()
         local textParts = {}
         for name, val in pairs(activeUpgrades) do
             if val > 0 then
@@ -797,6 +1059,12 @@ if isSupportedPlace then
         end
         
         local fullText = #textParts > 0 and table.concat(textParts, "\n") or "None Active"
+        
+        if activeUpgradesLabel and type(activeUpgradesLabel) == "table" and activeUpgradesLabel.TextLabel then
+            activeUpgradesLabel.TextLabel.AutomaticSize = Enum.AutomaticSize.Y
+            activeUpgradesLabel.TextLabel.TextWrapped = true
+        end
+
         activeUpgradesLabel:SetText(fullText)
     end
 
@@ -818,7 +1086,7 @@ if isSupportedPlace then
         end)
     end
 
-    local function applyUpgradeValue(name, targetValue, uLabel)
+    applyUpgradeValue = function(name, targetValue, uLabel)
         local upgradesFolder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
         local intv = upgradesFolder and upgradesFolder:FindFirstChild(name)
         
@@ -916,6 +1184,8 @@ if isSupportedPlace then
         restoreAllUpgrades()
     end)
 
+    local upgradeListGroup = Tabs.Upgrades:AddRightGroupbox("Available Upgrades")
+
     for _, u in ipairs(clientUpgrades) do
         upgradeListGroup:AddDivider(u)
         
@@ -932,6 +1202,7 @@ if isSupportedPlace then
         end
         
         local uLabel = upgradeListGroup:AddLabel("Current: " .. tostring(initialVal))
+        upgradeLabels[u] = uLabel
         
         upgradeListGroup:AddInput(u .. "_Input", {
             Default = tostring(initialVal),
@@ -967,9 +1238,6 @@ if isSupportedPlace then
 
     updateActiveUpgradesDisplay()
 else
-    ----------------------------------------------------------------
-    -- Unrecognized Place Tabs (Universal Mode)
-    ----------------------------------------------------------------
     Tabs.UniversalMain = Window:AddTab("Main - Universal", "globe")
     Tabs.Debug         = Window:AddTab("Debug", "bug")
     Tabs.Settings      = Window:AddTab("Settings", "settings")
@@ -1027,7 +1295,9 @@ else
     TeleportGroup:AddButton({
         Text = "Refresh Player List",
         Func = function()
-            Options.TargetPlayerDropdown:SetValues(getPlayerNames())
+            if Options and Options.TargetPlayerDropdown then
+                Options.TargetPlayerDropdown:SetValues(getPlayerNames())
+            end
         end
     })
 
@@ -1252,10 +1522,7 @@ local SystemGroup = Tabs.Debug:AddRightGroupbox("System")
 SystemGroup:AddButton({
     Text = "Unload GUI",
     Func = function()
-        tweening = false
-        Settings.CollectNormal = false
-        Settings.CollectGolden = false
-        if currentTween then currentTween:Cancel() end
+        stopAllCollection()
         
         for _, conn in pairs(connections) do
             if conn then conn:Disconnect() end
@@ -1302,4 +1569,3 @@ local SettingsGroup = Tabs.Settings:AddLeftGroupbox("GUI Settings")
 SettingsGroup:AddToggle("ExampleToggle", { Text = "Enable Example Feature", Default = false, Callback = function(Value) end })
 SettingsGroup:AddDropdown("ExampleDropdown", { Text = "Choose Mode", Values = {"Mode A", "Mode B", "Mode C"}, Default = 1, Callback = function(Value) end })
 SettingsGroup:AddKeyPicker("ExampleKeybind", { Default = "K", Text = "Toggle Menu Keybind", Callback = function() end })
- 
