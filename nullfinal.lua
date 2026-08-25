@@ -1008,7 +1008,7 @@ if isSupportedPlace then
     FarmGroup:AddToggle("AutoFarmBetaToggle", {
         Text = "auto farm (beta)",
         Default = Settings.AutoFarmBeta,
-        Tooltip = "ENABLE AUTO START COLLECTING TOO!! (will be fixed later.).",
+        Tooltip = "ENABLE AUTO START COLLECTING TOO!! (will be fixed later).",
         Callback = function(Value)
             Settings.AutoFarmBeta = Value
             if Value then
