@@ -1,3 +1,10 @@
+--[[
+https://discord.gg/jt83Cj8zs4, Fork of Alizeja's null gui but on my own repo. and with my own additions
+]]
+
+--------------------------------------------------------------------
+-- Services & Global Declarations
+--------------------------------------------------------------------
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -19,6 +26,7 @@ local SoundService = game:GetService("SoundService")
 local PlaceId, JobId = game.PlaceId, game.JobId 
 local plr = Players.LocalPlayer
 
+-- Fetch Game Name via MarketplaceService
 local gameName = "Unknown Game"
 pcall(function()
     local productInfo = MarketplaceService:GetProductInfoAsync(PlaceId)
@@ -27,13 +35,18 @@ pcall(function()
     end
 end)
 
+-- Place ID Check
 local isSupportedPlace = (PlaceId == 129279692364812 or PlaceId == 100588763114828)
 
+-- Signal Fallbacks for Executors
 local fSignal = firesignal or fire_signal or fireSignal
 if not fSignal and getgenv then
     fSignal = getgenv().firesignal or getgenv().fire_signal or getgenv().fireSig
 end
 
+--------------------------------------------------------------------
+-- Whitelists Data Arrays
+--------------------------------------------------------------------
 local UpgradesList = {
     "BusinessLicense", "Paycheck", "Shield", "DoubleJump", "HighlightGifts", "Medal",
     "TriaOrbs", "BetterJumpPad", "SwiftnessRing", "GrapplePoints", "EnemyOnTop", "Helmet",
@@ -56,6 +69,9 @@ local EnemiesList = {
     "Operator", "Telefragger", "Guardian", "Kolona", "Voidbreaker", "Cadence", "ShadowBaby"
 }
 
+--------------------------------------------------------------------
+-- Game References
+--------------------------------------------------------------------
 local events = ReplicatedStorage:WaitForChild("Events", 5) or ReplicatedStorage:FindFirstChild("Events")
 local Camera = workspace.CurrentCamera
 local enemies = workspace:FindFirstChild("Enemies")
@@ -79,6 +95,9 @@ local tripmines = dynamicItems and dynamicItems:FindFirstChild("Tripmine")
 local goldentripmines = dynamicItems and dynamicItems:FindFirstChild("GoldTripmines")
 local bullets = dynamicItems and dynamicItems:FindFirstChild("Bullet")
 
+--------------------------------------------------------------------
+-- Visualizers & Physical Safe Protection Spheres
+--------------------------------------------------------------------
 local activeTripmineProtections = {}
 local activeBulletProtections = {}
 
@@ -106,6 +125,9 @@ vpBox.ZIndex = 0
 vpBox.Adornee = velocityPart
 vpBox.Parent = velocityPart
 
+--------------------------------------------------------------------
+-- Integrated Settings & State Flags
+--------------------------------------------------------------------
 local Settings = {
     CollectNormal = false,
     CollectGolden = false,
@@ -136,10 +158,12 @@ local deleteAllEnemies = false
 local disableClientEnemies = false
 local autoDestroySpawns = false
 
+-- Tile connections state
 local antiFleshTilesEnabled = false
 local persistentTileConnections = false
 local persistentRespawnConnection = nil
 
+-- Ported Disable Features state flags
 local disableSeaMines = false
 local disableVoidImplosions = false
 local disableFakeBeacons = false
@@ -186,6 +210,9 @@ local updateActiveUpgradesDisplay = function() end
 local applyUpgradeValue = function() end
 local upgradeLabels = {}
 
+--------------------------------------------------------------------
+-- Global Player Event Connections (Auto Farm Dependencies)
+--------------------------------------------------------------------
 local respawnCounter = 0
 local beaconFiredTime = 0
 local isAutoFarmProcessing = false
@@ -243,6 +270,9 @@ if plr.Character then
     setupCharacter(plr.Character)
 end
 
+--------------------------------------------------------------------
+-- Auto Farm Engine
+--------------------------------------------------------------------
 local function isValueWhitelisted(value, whitelistTable)
     if not value or not whitelistTable then return false end
     local searchVal = tostring(value):lower()
@@ -346,11 +376,7 @@ local function checkAndVoteSelectParts()
 
             for _, chosenPart in ipairs(matchedParts) do
                 if pickedCount >= 4 then break end
-                
-                if pickedCount > 0 then
-                    task.wait(0.5)
-                end
-
+                if pickedCount > 0 then task.wait(0.5) end
                 interactWithPart(chosenPart)
                 pickedCount += 1
             end
@@ -411,6 +437,9 @@ local function checkAndVoteSelectParts()
     end)
 end
 
+--------------------------------------------------------------------
+-- Debug Attribute Logging Helper
+--------------------------------------------------------------------
 local function logSelectAttributes()
     local selectFolder = workspace:FindFirstChild("Select")
     if not selectFolder then return end
@@ -464,6 +493,9 @@ local function logSelectAttributes()
     end
 end
 
+--------------------------------------------------------------------
+-- Core Logic Utilities & Physical Protections 
+--------------------------------------------------------------------
 local function applyTileConnections()
     local mapFolder = workspace:FindFirstChild("Map") or workspace:FindFirstChild("CurrentRooms") or workspace
     for _, obj in ipairs(mapFolder:GetDescendants()) do
@@ -571,6 +603,9 @@ local function processProtections()
     end
 end
 
+--------------------------------------------------------------------
+-- Gift Collection & AI Defenses Logic 
+--------------------------------------------------------------------
 local Library
 
 local function notif(msg, title)
@@ -864,16 +899,20 @@ local function processPortedDisables()
         local nameLower = instance.Name:lower()
 
         if disableSeaMines and (nameLower:find("seamine") or nameLower:find("sea_mine") or nameLower:find("mine")) and not nameLower:find("trip") then
-            pcall(function() instance:Destroy() end); return
+            pcall(function() instance:Destroy() end)
+            return
         end
         if disableVoidImplosions and (nameLower:find("voidimplosion") or nameLower:find("implosion") or nameLower:find("void_implosion")) then
-            pcall(function() instance:Destroy() end); return
+            pcall(function() instance:Destroy() end)
+            return
         end
         if disableFakeBeacons and (nameLower:find("fakebeacon") or nameLower:find("fake_beacon") or (nameLower:find("beacon") and nameLower:find("fake"))) then
-            pcall(function() instance:Destroy() end); return
+            pcall(function() instance:Destroy() end)
+            return
         end
         if disableOblivion and (nameLower:find("oblivion") or nameLower:find("oblivionentity")) then
-            pcall(function() instance:Destroy() end); return
+            pcall(function() instance:Destroy() end)
+            return
         end
     end
 
@@ -910,6 +949,9 @@ local function purgeExistingEnemies()
     return count
 end
 
+--------------------------------------------------------------------
+-- Anti-Void Execution Engine
+--------------------------------------------------------------------
 local function processAntiVoid()
     if not av then return end
     local char = getChar(plr)
@@ -936,6 +978,9 @@ local function processAntiVoid()
     end
 end
 
+--------------------------------------------------------------------
+-- RenderStepped / Heartbeat Main Loop
+--------------------------------------------------------------------
 connections["MainHeartbeat"] = RunService.Heartbeat:Connect(function()
     processProtections()
     processAntiVoid()
@@ -961,6 +1006,9 @@ connections["MainHeartbeat"] = RunService.Heartbeat:Connect(function()
     end
 end)
 
+--------------------------------------------------------------------
+-- Load Obsidian UI Library
+--------------------------------------------------------------------
 Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/ThemeManager.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua"))()
@@ -992,6 +1040,9 @@ local Window = Library:CreateWindow({
     Icon = "cat", Center = true, AutoShow = true,
 })
 
+--------------------------------------------------------------------
+-- UI Tab Definitions
+--------------------------------------------------------------------
 local Tabs = {}
 
 if isSupportedPlace then
@@ -1003,6 +1054,9 @@ if isSupportedPlace then
     Tabs.Debug      = Window:AddTab("Debug", "bug")
     Tabs.Settings   = Window:AddTab("Settings", "settings")
 
+    --------------------------------------------------------------------
+    -- Farm Groupbox & Select Whitelists
+    --------------------------------------------------------------------
     local FarmGroup = Tabs.Playerlist:AddLeftGroupbox("Farm")
 
     FarmGroup:AddToggle("AutoFarmBetaToggle", {
@@ -1064,6 +1118,9 @@ if isSupportedPlace then
         end
     })
 
+    --------------------------------------------------------------------
+    -- Gifts Collection
+    --------------------------------------------------------------------
     local GiftGroup = Tabs.Playerlist:AddRightGroupbox("Gifts Collection")
 
     GiftGroup:AddLabel("<font color='#AAAAAA'><b>NOTE:</b> Finding gifts can be slow\n Use Instant TP for max collection.</font>")
@@ -1172,6 +1229,7 @@ if isSupportedPlace then
         end
     })
 
+    -- Enemies Tab
     local EnemyControlGroup = Tabs.Enemies:AddLeftGroupbox("AI & Entity Disabler")
 
     EnemyControlGroup:AddToggle("DisableAllEnemies", {
@@ -1255,8 +1313,16 @@ if isSupportedPlace then
                 for _, enemy in ipairs(enemies:GetChildren()) do
                     local hum = enemy:FindFirstChildOfClass("Humanoid")
                     local isDisabled = false
-                    if hum and hum.PlatformStand then isDisabled = true elseif enemy:FindFirstChildOfClass("Script") and enemy:FindFirstChildOfClass("Script").Disabled then isDisabled = true end
-                    if isDisabled then table.insert(lines, string.format("<font color='#AAAAAA'>%s (Disabled)</font>", enemy.Name)) else table.insert(lines, string.format("<font color='#00FF00'>%s (Active)</font>", enemy.Name)) end
+                    if hum and hum.PlatformStand then 
+                        isDisabled = true 
+                    elseif enemy:FindFirstChildOfClass("Script") and enemy:FindFirstChildOfClass("Script").Disabled then 
+                        isDisabled = true 
+                    end
+                    if isDisabled then 
+                        table.insert(lines, string.format("<font color='#AAAAAA'>%s (Disabled)</font>", enemy.Name)) 
+                    else 
+                        table.insert(lines, string.format("<font color='#00FF00'>%s (Active)</font>", enemy.Name)) 
+                    end
                 end
                 activeEnemiesLabel:SetText(table.concat(lines, "\n"))
             end
@@ -1276,9 +1342,15 @@ if isSupportedPlace then
 
     local function addDetailedEnemy(group, name)
         group:AddDivider(name)
-        if auto_disable[name] ~= nil then group:AddToggle(name.."_Disable", { Text = "Auto Disable", Default = auto_disable[name], Callback = function(v) auto_disable[name] = v if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) end
-        if auto_break[name] ~= nil then group:AddToggle(name.."_Break", { Text = "Auto Break AI", Default = auto_break[name], Callback = function(v) auto_break[name] = v if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) end
-        if auto_destroy[name] ~= nil then group:AddToggle(name.."_Destroy", { Text = "Auto Destroy", Default = auto_destroy[name], Callback = function(v) auto_destroy[name] = v if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) end
+        if auto_disable[name] ~= nil then 
+            group:AddToggle(name.."_Disable", { Text = "Auto Disable", Default = auto_disable[name], Callback = function(v) auto_disable[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
+        end
+        if auto_break[name] ~= nil then 
+            group:AddToggle(name.."_Break", { Text = "Auto Break AI", Default = auto_break[name], Callback = function(v) auto_break[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
+        end
+        if auto_destroy[name] ~= nil then 
+            group:AddToggle(name.."_Destroy", { Text = "Auto Destroy", Default = auto_destroy[name], Callback = function(v) auto_destroy[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
+        end
     end
 
     addDetailedEnemy(DetailedEnemyGroup, "Bell")
@@ -1312,6 +1384,9 @@ if isSupportedPlace then
     addDetailedEnemy(DetailedEnemyGroup, "RealityBreak")
     addDetailedEnemy(DetailedEnemyGroup, "Celestial")
 
+    --------------------------------------------------------------------
+    -- Map Tab
+    --------------------------------------------------------------------
     local MapGroup = Tabs.Map:AddLeftGroupbox("Void")
     MapGroup:AddToggle("AntiVoid", { Text = "Anti Void", Default = false, Callback = function(Value) av = Value end })
     MapGroup:AddDropdown("AntiVoidSetting", { Values = { "1. Teleport to Spawn", "2. Launch Up", "3. Closest Gift" }, Default = 1, Multi = false, Text = "Anti Void Setting", Callback = function(Value) antiVoidSelection = tonumber(string.split(Value, ".")[1]) end })
@@ -1319,11 +1394,11 @@ if isSupportedPlace then
     MapGroup:AddToggle("VisibleVoid", { Text = "Visible Void", Default = false, Callback = function(Value) local killVoid = workspace:FindFirstChild("KillVoid"); if killVoid then killVoid.Transparency = Value and 0 or 1 end end })
 
     local MapProtectionGroup = Tabs.Map:AddLeftGroupbox("Map Defenses")
-    MapProtectionGroup:AddToggle("Tripmine_Protection", { Text = "Tripmine Safe Sphere Protection", Default = pt, Callback = function(Value) pt = Value if not Value then for _, d in pairs(activeTripmineProtections) do if d.sphere then d.sphere:Destroy() end end table.clear(activeTripmineProtections) end end })
+    MapProtectionGroup:AddToggle("Tripmine_Protection", { Text = "Tripmine Safe Sphere Protection", Default = pt, Callback = function(Value) pt = Value; if not Value then for _, d in pairs(activeTripmineProtections) do if d.sphere then d.sphere:Destroy() end end table.clear(activeTripmineProtections) end end })
 
     local TilesGroup = Tabs.Map:AddRightGroupbox("tiles")
     TilesGroup:AddToggle("AntiFleshIceTiles", { Text = "Anti flesh tiles/ ice tiles (tile connection)", Default = false, Callback = function(Value) antiFleshTilesEnabled = Value; applyTileConnections() end })
-    TilesGroup:AddToggle("PersistentTileConnections", { Text = "Persistent tile connections", Default = false, Callback = function(Value) persistentTileConnections = Value if Value then if not persistentRespawnConnection then persistentRespawnConnection = plr.CharacterAdded:Connect(function() task.wait(1); if persistentTileConnections and antiFleshTilesEnabled then applyTileConnections() end end) end else if persistentRespawnConnection then persistentRespawnConnection:Disconnect(); persistentRespawnConnection = nil end end end })
+    TilesGroup:AddToggle("PersistentTileConnections", { Text = "Persistent tile connections", Default = false, Callback = function(Value) persistentTileConnections = Value; if Value then if not persistentRespawnConnection then persistentRespawnConnection = plr.CharacterAdded:Connect(function() task.wait(1); if persistentTileConnections and antiFleshTilesEnabled then applyTileConnections() end end) end else if persistentRespawnConnection then persistentRespawnConnection:Disconnect(); persistentRespawnConnection = nil end end end })
 
     local ExtraDisablesGroup = Tabs.Map:AddRightGroupbox("Null GUI Extra Disables")
     ExtraDisablesGroup:AddToggle("DisableSeaMines", { Text = "Disable Sea Mines", Default = false, Callback = function(Value) disableSeaMines = Value end })
@@ -1331,11 +1406,13 @@ if isSupportedPlace then
     ExtraDisablesGroup:AddToggle("DisableFakeBeacons", { Text = "Disable Fake Beacons", Default = false, Callback = function(Value) disableFakeBeacons = Value end })
     ExtraDisablesGroup:AddToggle("DisableOblivion", { Text = "Disable Oblivion", Default = false, Callback = function(Value) disableOblivion = Value end })
 
+    -- Music Tab
     local MusicGroup = Tabs.Music:AddLeftGroupbox("Playback")
     MusicGroup:AddButton({ Text = "Play Track 1", Func = function() if music and music:IsA("Sound") then music:Play() end end })
     MusicGroup:AddButton({ Text = "Stop Music", Func = function() if music and music:IsA("Sound") then music:Stop() end end })
     MusicGroup:AddSlider("VolumeSlider", { Text = "Volume", Default = 50, Min = 0, Max = 100, Rounding = 0, Suffix = "%", Callback = function(Value) if music and music:IsA("Sound") then music.Volume = Value / 100 end end })
 
+    -- Upgrades Tab
     local upgradeTabLeft = Tabs.Upgrades:AddLeftGroupbox("Upgrades Status")
     if upgradeTabLeft.Container then upgradeTabLeft.Container.AutomaticSize = Enum.AutomaticSize.Y end
     if fSignal then upgradeTabLeft:AddLabel("Your exploit can add upgrades.") else upgradeTabLeft:AddLabel("Your exploit currently doesn't support adding upgrades.") end
@@ -1348,7 +1425,10 @@ if isSupportedPlace then
         local textParts = {}
         for name, val in pairs(activeUpgrades) do if val > 0 then table.insert(textParts, string.format("<font color='#0055ff'>%s</font>: %d", name, val)) end end
         local fullText = #textParts > 0 and table.concat(textParts, "\n") or "None Active"
-        if activeUpgradesLabel and type(activeUpgradesLabel) == "table" and activeUpgradesLabel.TextLabel then activeUpgradesLabel.TextLabel.AutomaticSize = Enum.AutomaticSize.Y; activeUpgradesLabel.TextLabel.TextWrapped = true end
+        if activeUpgradesLabel and type(activeUpgradesLabel) == "table" and activeUpgradesLabel.TextLabel then 
+            activeUpgradesLabel.TextLabel.AutomaticSize = Enum.AutomaticSize.Y 
+            activeUpgradesLabel.TextLabel.TextWrapped = true 
+        end
         activeUpgradesLabel:SetText(fullText)
     end
 
@@ -1357,7 +1437,11 @@ if isSupportedPlace then
         upgradeValueGuards[name] = intv.Changed:Connect(function(newValue)
             if isSettingGuardValue[name] then return end
             local desiredValue = activeUpgrades[name]
-            if desiredValue and newValue ~= desiredValue then isSettingGuardValue[name] = true; intv.Value = desiredValue; isSettingGuardValue[name] = false end
+            if desiredValue and newValue ~= desiredValue then 
+                isSettingGuardValue[name] = true 
+                intv.Value = desiredValue 
+                isSettingGuardValue[name] = false 
+            end
         end)
     end
 
@@ -1368,15 +1452,33 @@ if isSupportedPlace then
         
         if targetValue > 0 then
             activeUpgrades[name] = targetValue
-            if intv then isSettingGuardValue[name] = true; intv.Value = targetValue; isSettingGuardValue[name] = false
-            else intv = Instance.new("IntValue"); intv.Name = name; intv.Value = targetValue; if upgradesFolder then intv.Parent = upgradesFolder end end
+            if intv then 
+                isSettingGuardValue[name] = true 
+                intv.Value = targetValue 
+                isSettingGuardValue[name] = false
+            else 
+                intv = Instance.new("IntValue") 
+                intv.Name = name 
+                intv.Value = targetValue 
+                if upgradesFolder then intv.Parent = upgradesFolder end 
+            end
             setupUpgradeGuardian(intv, name)
-            if events and events:FindFirstChild("UpgradesChanged") then pcall(function() if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = targetValue }) end if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = targetValue }) end end) end
+            if events and events:FindFirstChild("UpgradesChanged") then 
+                pcall(function() 
+                    if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = targetValue }) end 
+                    if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = targetValue }) end 
+                end) 
+            end
         else
             activeUpgrades[name] = nil
             if intv then intv:Destroy() end
             if upgradeValueGuards[name] then upgradeValueGuards[name]:Disconnect(); upgradeValueGuards[name] = nil end
-            if events and events:FindFirstChild("UpgradesChanged") then pcall(function() if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = 0 }) end if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = 0 }) end end) end
+            if events and events:FindFirstChild("UpgradesChanged") then 
+                pcall(function() 
+                    if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = 0 }) end 
+                    if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = 0 }) end 
+                end) 
+            end
         end
         if uLabel then uLabel:SetText("Current: " .. tostring(targetValue)) end
         updateActiveUpgradesDisplay()
@@ -1390,9 +1492,16 @@ if isSupportedPlace then
                 if upgradesFolder then
                     local intv = upgradesFolder:FindFirstChild(name)
                     if not intv then intv = Instance.new("IntValue"); intv.Name = name; intv.Parent = upgradesFolder end
-                    isSettingGuardValue[name] = true; intv.Value = value; isSettingGuardValue[name] = false
+                    isSettingGuardValue[name] = true 
+                    intv.Value = value 
+                    isSettingGuardValue[name] = false
                     setupUpgradeGuardian(intv, name)
-                    if events and events:FindFirstChild("UpgradesChanged") then pcall(function() if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = value }) end if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = value }) end end) end
+                    if events and events:FindFirstChild("UpgradesChanged") then 
+                        pcall(function() 
+                            if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = value }) end 
+                            if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = value }) end 
+                        end) 
+                    end
                 end
             end
         end
@@ -1445,6 +1554,9 @@ else
     TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/0?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, s in ipairs(servers.data) do if s.id ~= JobId and s.playing < s.maxPlayers then TeleportService:TeleportToPlaceInstance(PlaceId, s.id, plr); break end end end end })
 end
 
+--------------------------------------------------------------------
+-- Debug Tab (Loaded in BOTH modes)
+--------------------------------------------------------------------
 local DebugGroup = Tabs.Debug:AddLeftGroupbox("Server Info")
 local playerLabel = DebugGroup:AddLabel("Players: Fetching...")
 local pingLabel = DebugGroup:AddLabel("Ping: Fetching...")
@@ -1497,7 +1609,7 @@ task.spawn(function()
 end)
 
 local DebugToolsGroup = Tabs.Debug:AddRightGroupbox("Developer Utilities")
-DebugToolsGroup:AddToggle("AutoLogAttributesToggle", { Text = "Log Select Attributes (Every 10s)", Default = false, Callback = function(Value) logToggleActive = Value if Value then Library:Notify("Auto Select attribute logging started (10s interval).", 3); task.spawn(function() while logToggleActive do logSelectAttributes(); task.wait(10) end end) else Library:Notify("Auto Select attribute logging stopped.", 3) end end })
+DebugToolsGroup:AddToggle("AutoLogAttributesToggle", { Text = "Log Select Attributes (Every 10s)", Default = false, Callback = function(Value) logToggleActive = Value; if Value then Library:Notify("Auto Select attribute logging started (10s interval).", 3); task.spawn(function() while logToggleActive do logSelectAttributes(); task.wait(10) end end) else Library:Notify("Auto Select attribute logging stopped.", 3) end end })
 DebugToolsGroup:AddButton({ Text = "Log Select Attributes (Once)", Func = function() logSelectAttributes(); Library:Notify("Logged Select attributes to file/console.", 3) end })
 DebugToolsGroup:AddButton({ Text = "Execute Remote Spy (Cobalt)", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/lesingee/cobalt/refs/heads/main/loader.lua"))() end); Library:Notify("Executed Cobalt Remote Spy.", 3) end })
 DebugToolsGroup:AddButton({ Text = "Execute Dex (Dex++)", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/Babyhamsta/RBLX_Scripts/main/Universal/BypassedDarkDexV3.lua"))() end); Library:Notify("Executed Dex++ Explorer.", 3) end })
@@ -1517,7 +1629,7 @@ end)
 
 local consoleLoggingActive = false
 local consoleConnection = nil
-DebugToolsGroup:AddToggle("ConsoleLoggerToggle", { Text = "Log Remote / Error Output", Default = false, Callback = function(Value) consoleLoggingActive = Value if Value then consoleConnection = LogService.MessageOut:Connect(function(msg, msgType) if consoleLoggingActive then print("[NULL_DEBUG_LOG]: " .. msg) end end); Library:Notify("Console output logging enabled.", 3) else if consoleConnection then consoleConnection:Disconnect(); consoleConnection = nil end Library:Notify("Console output logging disabled.", 3) end end })
+DebugToolsGroup:AddToggle("ConsoleLoggerToggle", { Text = "Log Remote / Error Output", Default = false, Callback = function(Value) consoleLoggingActive = Value; if Value then consoleConnection = LogService.MessageOut:Connect(function(msg, msgType) if consoleLoggingActive then print("[NULL_DEBUG_LOG]: " .. msg) end end); Library:Notify("Console output logging enabled.", 3) else if consoleConnection then consoleConnection:Disconnect(); consoleConnection = nil end Library:Notify("Console output logging disabled.", 3) end end })
 
 local SystemGroup = Tabs.Debug:AddRightGroupbox("System")
 SystemGroup:AddButton({
@@ -1538,7 +1650,12 @@ SystemGroup:AddButton({
             for name, _ in pairs(activeUpgrades) do
                 local intv = upgradesFolder:FindFirstChild(name)
                 if intv then intv:Destroy() end
-                if events and events:FindFirstChild("UpgradesChanged") then pcall(function() if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = 0 }) end if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = 0 }) end end) end
+                if events and events:FindFirstChild("UpgradesChanged") then 
+                    pcall(function() 
+                        if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = 0 }) end 
+                        if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = 0 }) end 
+                    end) 
+                end
             end
         end
         table.clear(activeUpgrades)
