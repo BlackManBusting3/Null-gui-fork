@@ -1,7 +1,3 @@
---[[
-https://discord.gg/jt83Cj8zs4, Fork of Alizeja's null gui but on my own repo. and with my own additions
-]]
-
 --------------------------------------------------------------------
 -- Services & Global Declarations
 --------------------------------------------------------------------
