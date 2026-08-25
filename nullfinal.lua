@@ -1,31 +1,7 @@
---------------------------------------------------------------------
--- Auto-Cleanup Previous Instance
---------------------------------------------------------------------
-pcall(function()
-    -- Disconnect old global connections if they exist
-    if getgenv().NullGuiConnections then
-        for _, conn in pairs(getgenv().NullGuiConnections) do
-            if typeof(conn) == "RBXScriptConnection" then
-                conn:Disconnect()
-            end
-        end
-    end
-    
-    -- Destroy old protection folders
-    local oldFolder = workspace:FindFirstChild("NullGui_ProtectionSpheres")
-    if oldFolder then oldFolder:Destroy() end
-    
-    local oldVel = workspace:FindFirstChild("VelocityVisualizer")
-    if oldVel then oldVel:Destroy() end
-    
-    -- Unload old Obsidian UI if library reference exists
-    if getgenv().NullGuiLibrary and typeof(getgenv().NullGuiLibrary.Unload) == "function" then
-        getgenv().NullGuiLibrary:Unload()
-    end
-end)
+--[[
+https://discord.gg/jt83Cj8zs4, Fork of Alizeja's null gui but on my own repo. and with my own additions
+]]
 
--- Store references globally so the next execution can clean them up
-getgenv().NullGuiConnections = {}
 --------------------------------------------------------------------
 -- Services & Global Declarations
 --------------------------------------------------------------------
