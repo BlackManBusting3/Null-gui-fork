@@ -1,9 +1,5 @@
 --[[
-    AdminPanel_UIOnly.client.lua
-    
-    Fancier animated loading screen + Obsidian UI Library.
-    Integrated with AI/Entity disabling tools, game hooks, dynamic tab loading based on PlaceId, and Debug Tools.
-    Optimized protection engines to eliminate lag from physical part creation.
+https://discord.gg/jt83Cj8zs4, Fork of Alizeja's null gui but on my own repo. and with my own additions
 ]]
 
 --------------------------------------------------------------------
