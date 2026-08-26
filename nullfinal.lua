@@ -1014,7 +1014,7 @@ local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua"))()
 
 local Loading = Library:CreateLoading({
-    Title = "Null GUI - Java.", Icon = "138541249910408", TotalSteps = 4
+    Title = "Null GUI - Java.", Icon = "7476151111", TotalSteps = 4
 })
 
 Loading:SetMessage("Initializing...")
