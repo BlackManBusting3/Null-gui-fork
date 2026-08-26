@@ -61,7 +61,7 @@ local CursesList = {
     "OvertunedSpringer", "ScorchedEarth", "ProblemChild", "TweakedOdds", "Springloaded",
     "FasterLevelDestroy", "Telestabber", "SavoryRing", "Lap2", "ICBMBig",
     "TelefraggerPredict", "HighRoller", "FakeCount", "ScatteredGifts", "WeakJumpPads",
-    "BladeCarousel", "OneLessChoice", "FragileTiles", "Tantrum"
+    "BladeCarousel", "OneLessChoice", "FragileTiles", "Tantrum", "MedalCurses"
 }
 
 local EnemiesList = {
@@ -139,10 +139,14 @@ local Settings = {
     AutoBeacon = false,
     AutoStartCollecting = false,
     AutoFarmBeta = false,
+    TargetLevel = nil,
     EnemiesWhitelist = {},
     CursesWhitelist = {},
     UpgradesWhitelist = {}
 }
+
+local currentObservedLevel = nil
+local targetVoidProcessing = false
 
 local tweening = false
 local currentTween = nil
@@ -209,6 +213,100 @@ local logToggleActive = false
 local updateActiveUpgradesDisplay = function() end
 local applyUpgradeValue = function() end
 local upgradeLabels = {}
+local collectGiftsEngine = function() end
+
+--------------------------------------------------------------------
+-- Helper functions for accessing UI Toggles / Options safely
+--------------------------------------------------------------------
+local function getToggle(name)
+    return (Toggles and Toggles[name]) or (Options and Options[name])
+end
+
+local function getChar(player) return player and player.Character end
+local function getRoot(character) return character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character.PrimaryPart) end
+
+--------------------------------------------------------------------
+-- Console Log Listener & Level Tracking
+--------------------------------------------------------------------
+connections["LevelLogListener"] = LogService.MessageOut:Connect(function(msg, msgType)
+    local lvlStr = string.match(msg, "Level%s*(%d+)")
+    if lvlStr then
+        local lvl = tonumber(lvlStr)
+        if lvl then
+            currentObservedLevel = lvl
+        end
+    end
+end)
+
+local function executeVoidKill()
+    local killVoid = workspace:FindFirstChild("KillVoid")
+    local char = getChar(plr)
+    local root = getRoot(char)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+    if killVoid and root and hum and hum.Health > 0 then
+        local targetPosition = killVoid.Position + Vector3.new(0, 20, 0)
+        root.CFrame = CFrame.new(targetPosition)
+    end
+end
+
+--------------------------------------------------------------------
+-- Sound Listener for NewLevel Sound Void Trigger
+--------------------------------------------------------------------
+task.spawn(function()
+    local sfxFolder = SoundService:WaitForChild("SFXFolder", 10) or SoundService:FindFirstChild("SFXFolder")
+    local newLevelSound = sfxFolder and (sfxFolder:WaitForChild("NewLevel", 5) or sfxFolder:FindFirstChild("NewLevel"))
+
+    if newLevelSound and newLevelSound:IsA("Sound") then
+        connections["NewLevelVoidSoundConn"] = newLevelSound.Played:Connect(function()
+            if not Settings.TargetLevel or Settings.TargetLevel <= 0 or targetVoidProcessing then return end
+
+            if currentObservedLevel and currentObservedLevel >= Settings.TargetLevel then
+                targetVoidProcessing = true
+
+                -- Save collection states prior to autovoiding
+                local wasCollectingNormal = Settings.CollectNormal
+                local wasCollectingGolden = Settings.CollectGolden
+
+                -- Pause/stop current active gift movement loop
+                tweening = false
+                if currentTween then
+                    currentTween:Cancel()
+                    currentTween = nil
+                end
+
+                -- Listen for character respawn to resume collection
+                local respawnConnection
+                respawnConnection = plr.CharacterAdded:Connect(function(newChar)
+                    respawnConnection:Disconnect()
+                    task.wait(1.5) -- Allow character components and gifts to initialize
+
+                    if Settings.AutoStartCollecting or wasCollectingNormal then
+                        Settings.CollectNormal = true
+                        local normalTgl = getToggle("CollectNormalToggle")
+                        if normalTgl then normalTgl:SetValue(true) end
+                        task.defer(function() collectGiftsEngine(false) end)
+                    elseif wasCollectingGolden then
+                        Settings.CollectGolden = true
+                        local goldenTgl = getToggle("CollectGoldenToggle")
+                        if goldenTgl then goldenTgl:SetValue(true) end
+                        task.defer(function() collectGiftsEngine(true) end)
+                    end
+                end)
+
+                task.spawn(function()
+                    executeVoidKill()
+                    task.wait(30)
+                    
+                    -- Verify after 30 seconds if player dropped below desired level
+                    if currentObservedLevel and currentObservedLevel < Settings.TargetLevel then
+                        targetVoidProcessing = false
+                    end
+                end)
+            end
+        end)
+    end
+end)
 
 --------------------------------------------------------------------
 -- Global Player Event Connections (Auto Farm Dependencies)
@@ -236,7 +334,7 @@ local function handleEndScreenReset()
                     local absPos = continueBtn.AbsolutePosition
                     local absSize = continueBtn.AbsoluteSize
                     local center = absPos + (absSize / 2)
-                    
+
                     VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
                     task.wait(0.05)
                     VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 1)
@@ -286,7 +384,7 @@ end
 
 local function interactWithPart(part)
     if not part or not part:IsA("BasePart") then return end
-    
+
     local char = plr.Character
     local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
     if root then
@@ -330,109 +428,125 @@ local function interactWithPart(part)
     end
 end
 
+local function checkPartMatch(part)
+    if not part then return false end
+    local choiceType = part:GetAttribute("ChoiceType")
+    local choiceName = part:GetAttribute("ChoiceName")
+
+    if choiceType and choiceName then
+        local upperType = tostring(choiceType):upper()
+        if upperType:find("ENEM") then
+            return isValueWhitelisted(choiceName, Settings.EnemiesWhitelist)
+        elseif upperType:find("UPGRADE") then
+            return isValueWhitelisted(choiceName, Settings.UpgradesWhitelist)
+        elseif upperType:find("CURSE") then
+            return isValueWhitelisted(choiceName, Settings.CursesWhitelist)
+        end
+    end
+    return false
+end
+
 local function checkAndVoteSelectParts()
     if not Settings.AutoFarmBeta or isAutoFarmProcessing then return end
 
     local selectFolder = workspace:FindFirstChild("Select")
     if not selectFolder then return end
 
-    local targets = {"1", "2", "3"}
-    local matchedParts = {}
-
-    for _, name in ipairs(targets) do
-        local part = selectFolder:FindFirstChild(name)
-        if part then
-            local choiceType = part:GetAttribute("ChoiceType")
-            local choiceName = part:GetAttribute("ChoiceName")
-
-            if choiceType and choiceName then
-                local upperType = tostring(choiceType):upper()
-                local isMatched = false
-
-                if upperType == "ENEMIES" then
-                    isMatched = isValueWhitelisted(choiceName, Settings.EnemiesWhitelist)
-                elseif upperType == "UPGRADES" then
-                    isMatched = isValueWhitelisted(choiceName, Settings.UpgradesWhitelist)
-                elseif upperType == "CURSES" or upperType == "GREAT CURSES" or upperType == "GREATCURSES" then
-                    isMatched = isValueWhitelisted(choiceName, Settings.CursesWhitelist)
-                end
-
-                if isMatched then
-                    table.insert(matchedParts, part)
-                end
-            end
-        end
-    end
+    if not (selectFolder:FindFirstChild("1") or selectFolder:FindFirstChild("2") or selectFolder:FindFirstChild("3")) then return end
 
     isAutoFarmProcessing = true
     task.spawn(function()
-        local pickedCount = 0
+        pcall(function()
+            local processedParts = {}
 
-        if #matchedParts > 0 then
-            for i = #matchedParts, 2, -1 do
-                local j = math.random(i)
-                matchedParts[i], matchedParts[j] = matchedParts[j], matchedParts[i]
-            end
-
-            for _, chosenPart in ipairs(matchedParts) do
-                if pickedCount >= 4 then break end
-                if pickedCount > 0 then task.wait(0.5) end
-                interactWithPart(chosenPart)
-                pickedCount += 1
-            end
-        end
-
-        local part3 = selectFolder:FindFirstChild("3")
-        if part3 then
-            if pickedCount > 0 then task.wait(0.5) end
-            
-            local char = plr.Character
-            local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
-            if root then
-                root.CFrame = part3.CFrame + Vector3.new(0, 3, 0)
-            end
-
-            local startTime = os.clock()
-            while (os.clock() - startTime) < 2 do
-                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
-                task.wait(0.05)
-                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
-
-                local closestPrompt = nil
-                local shortestDist = 10
-                for _, prompt in ipairs(workspace:GetDescendants()) do
-                    if prompt:IsA("ProximityPrompt") and prompt.Parent and prompt.Parent:IsA("BasePart") then
-                        local dist = (prompt.Parent.Position - part3.Position).Magnitude
-                        if dist < shortestDist then
-                            shortestDist = dist
-                            closestPrompt = prompt
+            local function evaluateAndProcessParts()
+                -- Check MedalCurses random pick condition first
+                for _, partName in ipairs({"1", "2"}) do
+                    local part = selectFolder:FindFirstChild(partName)
+                    if part then
+                        local choiceName = tostring(part:GetAttribute("ChoiceName") or "")
+                        if choiceName:lower():find("medalcurse") or choiceName:lower():find("medalcurses") then
+                            local randomName = tostring(math.random(1, 2))
+                            local chosenPart = selectFolder:FindFirstChild(randomName) or part
+                            if chosenPart and not processedParts[chosenPart] then
+                                processedParts[chosenPart] = true
+                                interactWithPart(chosenPart)
+                                task.wait(2)
+                                return true
+                            end
                         end
                     end
                 end
 
-                if closestPrompt then
-                    pcall(function()
-                        if fireproximityprompt then
-                            fireproximityprompt(closestPrompt)
+                local candidates = {"1", "2"}
+                for _, name in ipairs(candidates) do
+                    local part = selectFolder:FindFirstChild(name)
+                    if part and not processedParts[part] then
+                        if checkPartMatch(part) then
+                            processedParts[part] = true
+                            interactWithPart(part)
+                            task.wait(2)
+                            return true
                         end
-                    end)
+                    end
                 end
-
-                task.wait(0.4)
+                return false
             end
 
-            interactWithPart(part3)
-        end
+            while evaluateAndProcessParts() do
+                task.wait(0.1)
+            end
 
-        beaconFiredTime = os.clock()
-        local startRespawns = respawnCounter
+            local part3 = selectFolder:FindFirstChild("3")
+            if part3 then
+                local char = plr.Character
+                local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
+                if root then
+                    root.CFrame = part3.CFrame + Vector3.new(0, 3, 0)
+                end
 
-        while isAutoFarmProcessing do
-            if (respawnCounter - startRespawns) >= 2 then break end
-            if beaconFiredTime and (os.clock() - beaconFiredTime) >= 5 then break end
-            task.wait(0.1)
-        end
+                local startTime = os.clock()
+                while (os.clock() - startTime) < 2 do
+                    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+                    task.wait(0.05)
+                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
 
+                    local closestPrompt = nil
+                    local shortestDist = 10
+                    for _, prompt in ipairs(workspace:GetDescendants()) do
+                        if prompt:IsA("ProximityPrompt") and prompt.Parent and prompt.Parent:IsA("BasePart") then
+                            local dist = (prompt.Parent.Position - part3.Position).Magnitude
+                            if dist < shortestDist then
+                                shortestDist = dist
+                                closestPrompt = prompt
+                            end
+                        end
+                    end
+
+                    if closestPrompt then
+                        pcall(function()
+                            if fireproximityprompt then
+                                fireproximityprompt(closestPrompt)
+                            end
+                        end)
+                    end
+
+                    task.wait(0.4)
+                end
+
+                interactWithPart(part3)
+                task.wait(2)
+            end
+
+            beaconFiredTime = os.clock()
+            local startRespawns = respawnCounter
+
+            while isAutoFarmProcessing do
+                if (respawnCounter - startRespawns) >= 2 then break end
+                if beaconFiredTime and (os.clock() - beaconFiredTime) >= 5 then break end
+                task.wait(0.1)
+            end
+        end)
         isAutoFarmProcessing = false
     end)
 end
@@ -614,9 +728,6 @@ local function notif(msg, title)
     end
 end
 
-local function getChar(player) return player and player.Character end
-local function getRoot(character) return character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character.PrimaryPart) end
-
 local function refreshGifts(normal, golden)
     table.clear(availableNormalGifts)
     table.clear(availableGoldenGifts)
@@ -767,14 +878,18 @@ local function stopAllCollection()
         currentTween:Cancel()
         currentTween = nil
     end
-    if Options then
-        if Options.CollectNormalToggle then Options.CollectNormalToggle:SetValue(false) end
-        if Options.CollectGoldenToggle then Options.CollectGoldenToggle:SetValue(false) end
-        if Options.LegitCollectionToggle then Options.LegitCollectionToggle:SetValue(false) end
-    end
+    
+    local normalToggle = getToggle("CollectNormalToggle")
+    if normalToggle then normalToggle:SetValue(false) end
+
+    local goldenToggle = getToggle("CollectGoldenToggle")
+    if goldenToggle then goldenToggle:SetValue(false) end
+
+    local legitToggle = getToggle("LegitCollectionToggle")
+    if legitToggle then legitToggle:SetValue(false) end
 end
 
-local function collectGiftsEngine(isGoldenTarget)
+collectGiftsEngine = function(isGoldenTarget)
     if tweening then
         if notifOn then notif("Already collecting gifts.", "Collection System") end
         return
@@ -804,9 +919,14 @@ local function collectGiftsEngine(isGoldenTarget)
                     if failedAttempts >= 2 or #availableNormalGifts == 0 then
                         if notifOn then notif("No normal gifts left. Switching to Golden Gifts.", "Collection System") end
                         Settings.CollectNormal = false
-                        if Options and Options.CollectNormalToggle then Options.CollectNormalToggle:SetValue(false) end
+                        
+                        local normalTgl = getToggle("CollectNormalToggle")
+                        if normalTgl then normalTgl:SetValue(false) end
+                        
                         Settings.CollectGolden = true
-                        if Options and Options.CollectGoldenToggle then Options.CollectGoldenToggle:SetValue(true) end
+                        local goldenTgl = getToggle("CollectGoldenToggle")
+                        if goldenTgl then goldenTgl:SetValue(true) end
+                        
                         tweening = false
                         task.defer(function() collectGiftsEngine(true) end)
                         return
@@ -825,13 +945,13 @@ local function collectGiftsEngine(isGoldenTarget)
             failedAttempts = 0
             blacklistedGifts[gift] = true
             currentTween = moveToGift(gift)
-            
+
             if currentTween then
                 currentTween.Completed:Wait()
             elseif not Settings.LegitCollection then
                 RunService.Heartbeat:Wait()
             end
-            
+
             if Settings.DelayBetweenGifts and Settings.DelayBetweenGifts > 0 then
                 task.wait(Settings.DelayBetweenGifts)
             end
@@ -861,7 +981,7 @@ end
 local function disableEnemy(name, destroy, breakAI, disableAI)
     local target = enemies and enemies:FindFirstChild(name)
     if not target then return false end
-    
+
     if destroy then
         target:Destroy()
         return true
@@ -1055,6 +1175,120 @@ if isSupportedPlace then
     Tabs.Settings   = Window:AddTab("Settings", "settings")
 
     --------------------------------------------------------------------
+    -- Gifts Collection Groupbox
+    --------------------------------------------------------------------
+    local GiftGroup = Tabs.Playerlist:AddRightGroupbox("Gifts Collection")
+
+    GiftGroup:AddLabel("<font color='#AAAAAA'><b>NOTE:</b> Finding gifts can be slow\n Use Instant TP for max collection.</font>")
+
+    GiftGroup:AddToggle("AutoStartCollectingToggle", {
+        Text = "<font color='#00FFCC'>Auto start collecting</font>",
+        Default = Settings.AutoStartCollecting,
+        Tooltip = "Automatically starts/restarts normal gift collection when SoundService.SFXFolder.NewLevel plays.",
+        Callback = function(Value)
+            Settings.AutoStartCollecting = Value
+            if Value then
+                local sfxFolder = SoundService:FindFirstChild("SFXFolder")
+                local newLevelSound = sfxFolder and sfxFolder:FindFirstChild("NewLevel")
+                if newLevelSound and newLevelSound:IsA("Sound") then
+                    if connections["AutoStartCollectingConn"] then connections["AutoStartCollectingConn"]:Disconnect() end
+                    connections["AutoStartCollectingConn"] = newLevelSound.Played:Connect(function()
+                        if Settings.AutoStartCollecting then
+                            Settings.CollectNormal = true
+                            local normalTgl = getToggle("CollectNormalToggle")
+                            if normalTgl then normalTgl:SetValue(true) end
+                            if tweening then stopAllCollection(); task.wait(0.1) end
+                            collectGiftsEngine(false)
+                            if notifOn then notif("NewLevel sound detected. Auto-started normal gift collection.", "Collection System") end
+                        end
+                    end)
+                end
+                Library:Notify("Auto Start Collecting Enabled.", 2)
+            else
+                if connections["AutoStartCollectingConn"] then
+                    connections["AutoStartCollectingConn"]:Disconnect()
+                    connections["AutoStartCollectingConn"] = nil
+                end
+                Library:Notify("Auto Start Collecting Disabled.", 2)
+            end
+        end
+    })
+
+    GiftGroup:AddToggle("CollectNormalToggle", {
+        Text = "<font color='#AA55FF'>Collect Normal Gifts</font>",
+        Default = Settings.CollectNormal,
+        Callback = function(Value)
+            Settings.CollectNormal = Value
+            if Value then
+                if Settings.CollectGolden then
+                    Settings.CollectGolden = false
+                    local goldenTgl = getToggle("CollectGoldenToggle")
+                    if goldenTgl then goldenTgl:SetValue(false) end
+                end
+                collectGiftsEngine(false)
+            else
+                if not Settings.CollectGolden and tweening then stopAllCollection() end
+            end
+        end
+    })
+
+    GiftGroup:AddToggle("CollectGoldenToggle", {
+        Text = "<font color='#FFCC00'>Collect Golden Gifts</font>",
+        Default = Settings.CollectGolden,
+        Callback = function(Value)
+            Settings.CollectGolden = Value
+            if Value then
+                if Settings.CollectNormal then
+                    Settings.CollectNormal = false
+                    local normalTgl = getToggle("CollectNormalToggle")
+                    if normalTgl then normalTgl:SetValue(false) end
+                end
+                collectGiftsEngine(true)
+            else
+                if not Settings.CollectNormal and tweening then stopAllCollection() end
+            end
+        end
+    })
+
+    GiftGroup:AddToggle("LegitCollectionToggle", {
+        Text = "<font color='#FF4444'>Legit collection (slow)</font>",
+        Default = Settings.LegitCollection,
+        Tooltip = "Uses PathfindingService to naturally walk to gifts instead of teleporting.",
+        Callback = function(Value)
+            Settings.LegitCollection = Value
+            if Value then Library:Notify("Legit Pathfinding Mode Enabled.", 2) end
+        end
+    })
+
+    GiftGroup:AddInput("LegitSpeedInput", {
+        Default = tostring(Settings.LegitSpeed), Numeric = true, Finished = true, Text = "Legit WalkSpeed",
+        Placeholder = "16...", Callback = function(Value)
+            local num = tonumber(Value)
+            if num and num > 0 then Settings.LegitSpeed = num; Library:Notify("Legit Speed set to " .. tostring(num), 2) end
+        end
+    })
+
+    GiftGroup:AddToggle("AutoBeaconToggle", { Text = "<font color='#00FF00'>Walk/TP To Beacon On Finish</font>", Default = Settings.AutoBeacon, Callback = function(Value) Settings.AutoBeacon = Value end })
+    GiftGroup:AddButton({ Text = "<font color='#FF4444'>Cancel Gift Collection</font>", Func = function() stopAllCollection(); Library:Notify("Cancelled gift collection.", 2) end })
+    GiftGroup:AddToggle("InstantTPToggle", { Text = "Instant Teleport Collection", Default = Settings.InstantTeleport, Callback = function(Value) Settings.InstantTeleport = Value end })
+
+    GiftGroup:AddInput("TweenSpeedInput", {
+        Default = tostring(Settings.TweenSpeed), Numeric = true, Finished = true, Text = "Tween Speed (If TP Off)",
+        Placeholder = "300...", Callback = function(Value)
+            local num = tonumber(Value)
+            if num and num > 0 then Settings.TweenSpeed = num; Library:Notify("Tween Speed set to " .. tostring(num), 2) end
+        end
+    })
+
+    GiftGroup:AddInput("TeleportDelayInput", {
+        Default = tostring(Settings.DelayBetweenGifts), Numeric = true, Finished = true, Text = "Teleport Delay (Seconds)",
+        Placeholder = "0.05...", Callback = function(Value)
+            local num = tonumber(Value)
+            if num and num >= 0 then Settings.DelayBetweenGifts = num; Library:Notify("Teleport Delay set to " .. tostring(num) .. "s", 2) end
+        end
+    })
+
+    --------------------------------------------------------------------
     -- Farm Groupbox & Select Whitelists
     --------------------------------------------------------------------
     local FarmGroup = Tabs.Playerlist:AddLeftGroupbox("Farm")
@@ -1062,15 +1296,48 @@ if isSupportedPlace then
     FarmGroup:AddToggle("AutoFarmBetaToggle", {
         Text = "auto farm (beta)",
         Default = Settings.AutoFarmBeta,
-        Tooltip = "ENABLE AUTO START COLLECTING TOO!! (will be fixed later).",
+        Tooltip = "Auto enables start collecting, beacon TP, and auto void.",
         Callback = function(Value)
             Settings.AutoFarmBeta = Value
+            local autoStartTgl = getToggle("AutoStartCollectingToggle")
+            local autoBeaconTgl = getToggle("AutoBeaconToggle")
+            local autoVoidInput = Options and Options.TargetLevelVoidInput
+
             if Value then
-                Settings.AutoStartCollecting = true
-                if Options and Options.AutoStartCollectingToggle then Options.AutoStartCollectingToggle:SetValue(true) end
+                if autoStartTgl then autoStartTgl:SetValue(true) else Settings.AutoStartCollecting = true end
+                if autoBeaconTgl then autoBeaconTgl:SetValue(true) else Settings.AutoBeacon = true end
+                
+                Settings.TargetLevel = 1
+                if autoVoidInput then autoVoidInput:SetValue("1") end
+
                 Library:Notify("Auto Farm (Beta) Enabled.", 2)
             else
+                if autoStartTgl then autoStartTgl:SetValue(false) else Settings.AutoStartCollecting = false end
+                if autoBeaconTgl then autoBeaconTgl:SetValue(false) else Settings.AutoBeacon = false end
+
+                Settings.TargetLevel = nil
+                if autoVoidInput then autoVoidInput:SetValue("") end
+
                 Library:Notify("Auto Farm (Beta) Disabled.", 2)
+            end
+        end
+    })
+
+    FarmGroup:AddInput("TargetLevelVoidInput", {
+        Text = "Auto Void at Level",
+        Default = "",
+        Numeric = true,
+        Finished = false,
+        Placeholder = "Target Level (e.g. 2)...",
+        Tooltip = "Input player level to automatically teleport character into the void upon reaching it.",
+        Callback = function(Value)
+            local num = tonumber(Value)
+            if num and num > 0 then
+                Settings.TargetLevel = num
+                Library:Notify("Auto Void set for Level " .. tostring(num), 2)
+            else
+                Settings.TargetLevel = nil
+                Library:Notify("Auto Void Level disabled.", 2)
             end
         end
     })
@@ -1115,117 +1382,6 @@ if isSupportedPlace then
                 velocityPart.Transparency = 1
                 vpBox.Transparency = 1
             end
-        end
-    })
-
-    --------------------------------------------------------------------
-    -- Gifts Collection
-    --------------------------------------------------------------------
-    local GiftGroup = Tabs.Playerlist:AddRightGroupbox("Gifts Collection")
-
-    GiftGroup:AddLabel("<font color='#AAAAAA'><b>NOTE:</b> Finding gifts can be slow\n Use Instant TP for max collection.</font>")
-
-    GiftGroup:AddToggle("AutoStartCollectingToggle", {
-        Text = "<font color='#00FFCC'>Auto start collecting</font>",
-        Default = Settings.AutoStartCollecting,
-        Tooltip = "Automatically starts/restarts normal gift collection when SoundService.SFXFolder.NewLevel plays.",
-        Callback = function(Value)
-            Settings.AutoStartCollecting = Value
-            if Value then
-                local sfxFolder = SoundService:FindFirstChild("SFXFolder")
-                local newLevelSound = sfxFolder and sfxFolder:FindFirstChild("NewLevel")
-                if newLevelSound and newLevelSound:IsA("Sound") then
-                    if connections["AutoStartCollectingConn"] then connections["AutoStartCollectingConn"]:Disconnect() end
-                    connections["AutoStartCollectingConn"] = newLevelSound.Played:Connect(function()
-                        if Settings.AutoStartCollecting then
-                            Settings.CollectNormal = true
-                            if Options and Options.CollectNormalToggle then Options.CollectNormalToggle:SetValue(true) end
-                            if tweening then stopAllCollection(); task.wait(0.1) end
-                            collectGiftsEngine(false)
-                            if notifOn then notif("NewLevel sound detected. Auto-started normal gift collection.", "Collection System") end
-                        end
-                    end)
-                end
-                Library:Notify("Auto Start Collecting Enabled.", 2)
-            else
-                if connections["AutoStartCollectingConn"] then
-                    connections["AutoStartCollectingConn"]:Disconnect()
-                    connections["AutoStartCollectingConn"] = nil
-                end
-                Library:Notify("Auto Start Collecting Disabled.", 2)
-            end
-        end
-    })
-
-    GiftGroup:AddToggle("CollectNormalToggle", {
-        Text = "<font color='#AA55FF'>Collect Normal Gifts</font>",
-        Default = Settings.CollectNormal,
-        Callback = function(Value)
-            Settings.CollectNormal = Value
-            if Value then
-                if Settings.CollectGolden then
-                    Settings.CollectGolden = false
-                    if Options and Options.CollectGoldenToggle then Options.CollectGoldenToggle:SetValue(false) end
-                end
-                collectGiftsEngine(false)
-            else
-                if not Settings.CollectGolden and tweening then stopAllCollection() end
-            end
-        end
-    })
-
-    GiftGroup:AddToggle("CollectGoldenToggle", {
-        Text = "<font color='#FFCC00'>Collect Golden Gifts</font>",
-        Default = Settings.CollectGolden,
-        Callback = function(Value)
-            Settings.CollectGolden = Value
-            if Value then
-                if Settings.CollectNormal then
-                    Settings.CollectNormal = false
-                    if Options and Options.CollectNormalToggle then Options.CollectNormalToggle:SetValue(false) end
-                end
-                collectGiftsEngine(true)
-            else
-                if not Settings.CollectNormal and tweening then stopAllCollection() end
-            end
-        end
-    })
-
-    GiftGroup:AddToggle("LegitCollectionToggle", {
-        Text = "<font color='#FF4444'>Legit collection (slow)</font>",
-        Default = Settings.LegitCollection,
-        Tooltip = "Uses PathfindingService to naturally walk to gifts instead of teleporting.",
-        Callback = function(Value)
-            Settings.LegitCollection = Value
-            if Value then Library:Notify("Legit Pathfinding Mode Enabled.", 2) end
-        end
-    })
-
-    GiftGroup:AddInput("LegitSpeedInput", {
-        Default = tostring(Settings.LegitSpeed), Numeric = true, Finished = true, Text = "Legit WalkSpeed",
-        Placeholder = "16...", Callback = function(Value)
-            local num = tonumber(Value)
-            if num and num > 0 then Settings.LegitSpeed = num; Library:Notify("Legit Speed set to " .. tostring(num), 2) end
-        end
-    })
-
-    GiftGroup:AddToggle("AutoBeaconToggle", { Text = "<font color='#00FF00'>Walk/TP To Beacon On Finish</font>", Default = Settings.AutoBeacon, Callback = function(Value) Settings.AutoBeacon = Value end })
-    GiftGroup:AddButton({ Text = "<font color='#FF4444'>Cancel Gift Collection</font>", Func = function() stopAllCollection(); Library:Notify("Cancelled gift collection.", 2) end })
-    GiftGroup:AddToggle("InstantTPToggle", { Text = "Instant Teleport Collection", Default = Settings.InstantTeleport, Callback = function(Value) Settings.InstantTeleport = Value end })
-    
-    GiftGroup:AddInput("TweenSpeedInput", {
-        Default = tostring(Settings.TweenSpeed), Numeric = true, Finished = true, Text = "Tween Speed (If TP Off)",
-        Placeholder = "300...", Callback = function(Value)
-            local num = tonumber(Value)
-            if num and num > 0 then Settings.TweenSpeed = num; Library:Notify("Tween Speed set to " .. tostring(num), 2) end
-        end
-    })
-
-    GiftGroup:AddInput("TeleportDelayInput", {
-        Default = tostring(Settings.DelayBetweenGifts), Numeric = true, Finished = true, Text = "Teleport Delay (Seconds)",
-        Placeholder = "0.05...", Callback = function(Value)
-            local num = tonumber(Value)
-            if num and num >= 0 then Settings.DelayBetweenGifts = num; Library:Notify("Teleport Delay set to " .. tostring(num) .. "s", 2) end
         end
     })
 
@@ -1274,7 +1430,8 @@ if isSupportedPlace then
             deleteAllEnemies = Value
             if Value then
                 pb = true
-                if Options and Options.Guardian_Protection then Options.Guardian_Protection:SetValue(true) end
+                local guardianTgl = getToggle("Guardian_Protection")
+                if guardianTgl then guardianTgl:SetValue(true) end
                 if enemies then
                     purgeExistingEnemies()
                     connections["DeleteEnemies"] = enemies.ChildAdded:Connect(function(child)
@@ -1360,7 +1517,7 @@ if isSupportedPlace then
     addDetailedEnemy(DetailedEnemyGroup, "ICBM")
     addDetailedEnemy(DetailedEnemyGroup, "Baby")
     addDetailedEnemy(DetailedEnemyGroup, "Flesh")
-    
+
     DetailedEnemyGroup:AddDivider("Guardian (CANNOT BE DISABLED)")
     DetailedEnemyGroup:AddToggle("Guardian_Protection", {
         Text = "Create Bullet Protection Sphere", Default = pb,
@@ -1417,7 +1574,7 @@ if isSupportedPlace then
     if upgradeTabLeft.Container then upgradeTabLeft.Container.AutomaticSize = Enum.AutomaticSize.Y end
     if fSignal then upgradeTabLeft:AddLabel("Your exploit can add upgrades.") else upgradeTabLeft:AddLabel("Your exploit currently doesn't support adding upgrades.") end
     upgradeTabLeft:AddDivider("Active Upgrades List")
-    
+
     local activeUpgradesLabel = upgradeTabLeft:AddLabel("None Active")
     local clientUpgrades = { "MatrixTetrahedron", "Adrenaline", "HighlightGifts", "AdvancedGravityCoil", "SportShoes", "TheOrb", "RealWings", "GraceWings", "RadarPlayer", "RadarInstruments", "HighlightTripmines", "IceSkates", "SwiftnessRing", "GiftMagnet", "SharkTail", "EnemyOnTop", "PocketBell", "NinjaBelt", "Helmet", "DoubleJump", "RadarAltars" }
 
@@ -1449,7 +1606,7 @@ if isSupportedPlace then
         local upgradesFolder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
         local intv = upgradesFolder and upgradesFolder:FindFirstChild(name)
         targetValue = math.max(0, math.floor(targetValue or 0))
-        
+
         if targetValue > 0 then
             activeUpgrades[name] = targetValue
             if intv then 
@@ -1516,15 +1673,15 @@ if isSupportedPlace then
         local initialVal = 0
         local upgradesFolder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
         local existingInt = upgradesFolder and upgradesFolder:FindFirstChild(u)
-        
+
         if existingInt then
             initialVal = existingInt.Value
             if initialVal > 0 then activeUpgrades[u] = initialVal; setupUpgradeGuardian(existingInt, u) end
         end
-        
+
         local uLabel = upgradeListGroup:AddLabel("Current: " .. tostring(initialVal))
         upgradeLabels[u] = uLabel
-        
+
         upgradeListGroup:AddInput(u .. "_Input", { Default = tostring(initialVal), Numeric = true, Finished = true, Text = "Set Amount", Placeholder = "Amount...", Callback = function(Value) local num = tonumber(Value) if num then applyUpgradeValue(u, num, uLabel) end end })
         upgradeListGroup:AddButton({ Text = "Add One (" .. u .. ")", Func = function() local current = activeUpgrades[u] or initialVal; applyUpgradeValue(u, current + 1, uLabel) end })
         upgradeListGroup:AddButton({ Text = "Remove One (" .. u .. ")", Func = function() local current = activeUpgrades[u] or initialVal; applyUpgradeValue(u, current - 1, uLabel) end })
@@ -1555,7 +1712,7 @@ else
 end
 
 --------------------------------------------------------------------
--- Debug Tab (Loaded in BOTH modes)
+-- Debug Tab
 --------------------------------------------------------------------
 local DebugGroup = Tabs.Debug:AddLeftGroupbox("Server Info")
 local playerLabel = DebugGroup:AddLabel("Players: Fetching...")
@@ -1640,7 +1797,7 @@ SystemGroup:AddButton({
         for _, guard in pairs(upgradeValueGuards) do if guard then guard:Disconnect() end end
         if consoleConnection then consoleConnection:Disconnect() end
         if persistentRespawnConnection then persistentRespawnConnection:Disconnect() end
-        
+
         if protectionFolder then protectionFolder:Destroy() end
         table.clear(activeTripmineProtections); table.clear(activeBulletProtections)
         if velocityPart and velocityPart.Parent then velocityPart:Destroy() end
