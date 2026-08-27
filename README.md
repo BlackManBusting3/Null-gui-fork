@@ -1,5 +1,5 @@
 # Java's Null-gui (WIP)
-Fork of Alizeja's null gui but on my own repo. and with my own additions
+"Fork"/Inpired on Alizeja's null gui but on my own repo. and with my own additions
 
 ```
 loadstring(game:HttpGet('https://raw.githubusercontent.com/BlackManBusting3/Null-gui-fork/refs/heads/main/nullfinal.lua'))()
