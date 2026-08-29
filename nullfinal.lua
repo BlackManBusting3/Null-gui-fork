@@ -1,6 +1,19 @@
---[[
-https://discord.gg/jt83Cj8zs4, Fork of Alizeja's null gui but on my own repo. and with my own additions
-]]
+--------------------------------------------------------------------
+-- Cleanup Pre-Existing Execution Instances
+--------------------------------------------------------------------
+if _G.NullGui_Cleanup and type(_G.NullGui_Cleanup) == "function" then
+    pcall(_G.NullGui_Cleanup)
+end
+
+local scriptConnections = {}
+_G.NullGui_Cleanup = function()
+    for _, conn in pairs(scriptConnections) do
+        if conn and conn.Connected then
+            conn:Disconnect()
+        end
+    end
+    table.clear(scriptConnections)
+end
 
 --------------------------------------------------------------------
 -- Services & Global Declarations
@@ -26,17 +39,19 @@ local SoundService = game:GetService("SoundService")
 local PlaceId, JobId = game.PlaceId, game.JobId 
 local plr = Players.LocalPlayer
 
--- Fetch Game Name via MarketplaceService
+-- Fetch Game Name via MarketplaceService Async (Non-Blocking)
 local gameName = "Unknown Game"
-pcall(function()
-    local productInfo = MarketplaceService:GetProductInfoAsync(PlaceId)
-    if productInfo and productInfo.Name then
-        gameName = productInfo.Name
-    end
+task.spawn(function()
+    pcall(function()
+        local productInfo = MarketplaceService:GetProductInfoAsync(PlaceId)
+        if productInfo and productInfo.Name then
+            gameName = productInfo.Name
+        end
+    end)
 end)
 
--- Place ID Check
-local isSupportedPlace = (PlaceId == 129279692364812 or PlaceId == 100588763114828)
+-- Place ID Check (Set to true by default to bypass game restriction)
+local isSupportedPlace = true
 
 -- Signal Fallbacks for Executors
 local fSignal = firesignal or fire_signal or fireSignal
@@ -72,7 +87,7 @@ local EnemiesList = {
 --------------------------------------------------------------------
 -- Game References
 --------------------------------------------------------------------
-local events = ReplicatedStorage:WaitForChild("Events", 5) or ReplicatedStorage:FindFirstChild("Events")
+local events = ReplicatedStorage:FindFirstChild("Events") or ReplicatedStorage:WaitForChild("Events", 2)
 local Camera = workspace.CurrentCamera
 local enemies = workspace:FindFirstChild("Enemies")
 local selection = workspace:FindFirstChild("Select")
@@ -80,7 +95,6 @@ local collectGift = events and events:FindFirstChild("GiftCollected")
 local currentRooms = workspace:FindFirstChild("CurrentRooms")
 local pads = workspace:FindFirstChild("JumpPads")
 local code = ReplicatedStorage:FindFirstChild("CodeVal")
-local music = ReplicatedStorage:FindFirstChild("MusicVal")
 local curses = ReplicatedStorage:FindFirstChild("CurseFolder") and ReplicatedStorage.CurseFolder:FindFirstChild("Curses")
 local gcurses = ReplicatedStorage:FindFirstChild("GreaterCurseFolder") and ReplicatedStorage.GreaterCurseFolder:FindFirstChild("Curses")
 local enemiesFolder = ReplicatedStorage:FindFirstChild("EnemyFolder")
@@ -237,6 +251,7 @@ connections["LevelLogListener"] = LogService.MessageOut:Connect(function(msg, ms
         end
     end
 end)
+table.insert(scriptConnections, connections["LevelLogListener"])
 
 local function executeVoidKill()
     local killVoid = workspace:FindFirstChild("KillVoid")
@@ -254,32 +269,36 @@ end
 -- Sound Listener for NewLevel Sound Void Trigger
 --------------------------------------------------------------------
 task.spawn(function()
-    local sfxFolder = SoundService:WaitForChild("SFXFolder", 10) or SoundService:FindFirstChild("SFXFolder")
-    local newLevelSound = sfxFolder and (sfxFolder:WaitForChild("NewLevel", 5) or sfxFolder:FindFirstChild("NewLevel"))
+    local sfxFolder = SoundService:WaitForChild("SFXFolder", 3) or SoundService:FindFirstChild("SFXFolder")
+    local newLevelSound = sfxFolder and (sfxFolder:WaitForChild("NewLevel", 2) or sfxFolder:FindFirstChild("NewLevel"))
 
     if newLevelSound and newLevelSound:IsA("Sound") then
         connections["NewLevelVoidSoundConn"] = newLevelSound.Played:Connect(function()
-            if not Settings.TargetLevel or Settings.TargetLevel <= 0 or targetVoidProcessing then return end
+            if not Settings.TargetLevel or type(Settings.TargetLevel) ~= "number" or Settings.TargetLevel <= 0 or targetVoidProcessing then return end
 
             if currentObservedLevel and currentObservedLevel >= Settings.TargetLevel then
                 targetVoidProcessing = true
 
-                -- Save collection states prior to autovoiding
+                -- Clear target level immediately so it triggers strictly ONCE when reaching the set target
+                Settings.TargetLevel = nil
+                local autoVoidInput = Options and Options.TargetLevelVoidInput
+                if autoVoidInput then
+                    autoVoidInput:SetValue("")
+                end
+
                 local wasCollectingNormal = Settings.CollectNormal
                 local wasCollectingGolden = Settings.CollectGolden
 
-                -- Pause/stop current active gift movement loop
                 tweening = false
                 if currentTween then
                     currentTween:Cancel()
                     currentTween = nil
                 end
 
-                -- Listen for character respawn to resume collection
                 local respawnConnection
                 respawnConnection = plr.CharacterAdded:Connect(function(newChar)
                     respawnConnection:Disconnect()
-                    task.wait(1.5) -- Allow character components and gifts to initialize
+                    task.wait(1.5)
 
                     if Settings.AutoStartCollecting or wasCollectingNormal then
                         Settings.CollectNormal = true
@@ -293,18 +312,16 @@ task.spawn(function()
                         task.defer(function() collectGiftsEngine(true) end)
                     end
                 end)
+                table.insert(scriptConnections, respawnConnection)
 
                 task.spawn(function()
                     executeVoidKill()
                     task.wait(30)
-                    
-                    -- Verify after 30 seconds if player dropped below desired level
-                    if currentObservedLevel and currentObservedLevel < Settings.TargetLevel then
-                        targetVoidProcessing = false
-                    end
+                    targetVoidProcessing = false
                 end)
             end
         end)
+        table.insert(scriptConnections, connections["NewLevelVoidSoundConn"])
     end
 end)
 
@@ -355,15 +372,17 @@ end
 
 local function setupCharacter(char)
     respawnCounter += 1
-    local hum = char:WaitForChild("Humanoid", 5)
+    local hum = char:WaitForChild("Humanoid", 3)
     if hum then
-        hum.Died:Connect(function()
+        local conn = hum.Died:Connect(function()
             handlePlayerDeath()
         end)
+        table.insert(scriptConnections, conn)
     end
 end
 
-plr.CharacterAdded:Connect(setupCharacter)
+local charConn = plr.CharacterAdded:Connect(setupCharacter)
+table.insert(scriptConnections, charConn)
 if plr.Character then
     setupCharacter(plr.Character)
 end
@@ -389,7 +408,7 @@ local function interactWithPart(part)
     local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
     if root then
         root.CFrame = part.CFrame + Vector3.new(0, 3, 0)
-        task.wait(0.1)
+        task.wait(0.05)
     end
 
     VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
@@ -398,7 +417,8 @@ local function interactWithPart(part)
 
     local closestPrompt = nil
     local shortestDist = 10
-    for _, prompt in ipairs(workspace:GetDescendants()) do
+    local searchScope = part.Parent or workspace
+    for _, prompt in ipairs(searchScope:GetChildren()) do
         if prompt:IsA("ProximityPrompt") and prompt.Parent and prompt.Parent:IsA("BasePart") then
             local dist = (prompt.Parent.Position - part.Position).Magnitude
             if dist < shortestDist then
@@ -460,7 +480,6 @@ local function checkAndVoteSelectParts()
             local processedParts = {}
 
             local function evaluateAndProcessParts()
-                -- Check MedalCurses random pick condition first
                 for _, partName in ipairs({"1", "2"}) do
                     local part = selectFolder:FindFirstChild(partName)
                     if part then
@@ -471,7 +490,7 @@ local function checkAndVoteSelectParts()
                             if chosenPart and not processedParts[chosenPart] then
                                 processedParts[chosenPart] = true
                                 interactWithPart(chosenPart)
-                                task.wait(2)
+                                task.wait(1.5)
                                 return true
                             end
                         end
@@ -485,7 +504,7 @@ local function checkAndVoteSelectParts()
                         if checkPartMatch(part) then
                             processedParts[part] = true
                             interactWithPart(part)
-                            task.wait(2)
+                            task.wait(1.5)
                             return true
                         end
                     end
@@ -512,14 +531,10 @@ local function checkAndVoteSelectParts()
                     VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
 
                     local closestPrompt = nil
-                    local shortestDist = 10
-                    for _, prompt in ipairs(workspace:GetDescendants()) do
-                        if prompt:IsA("ProximityPrompt") and prompt.Parent and prompt.Parent:IsA("BasePart") then
-                            local dist = (prompt.Parent.Position - part3.Position).Magnitude
-                            if dist < shortestDist then
-                                shortestDist = dist
-                                closestPrompt = prompt
-                            end
+                    for _, prompt in ipairs(part3:GetChildren()) do
+                        if prompt:IsA("ProximityPrompt") then
+                            closestPrompt = prompt
+                            break
                         end
                     end
 
@@ -535,7 +550,7 @@ local function checkAndVoteSelectParts()
                 end
 
                 interactWithPart(part3)
-                task.wait(2)
+                task.wait(1.5)
             end
 
             beaconFiredTime = os.clock()
@@ -645,7 +660,7 @@ local function protectTripmine(trip)
     local sphere = createProtectionSphere(trip, radius, Color3.fromRGB(0, 255, 150))
     activeTripmineProtections[trip] = { sphere = sphere, radius = radius }
 
-    trip.Destroying:Connect(function()
+    local conn = trip.Destroying:Connect(function()
         if activeTripmineProtections[trip] then
             if activeTripmineProtections[trip].sphere then
                 activeTripmineProtections[trip].sphere:Destroy()
@@ -653,6 +668,7 @@ local function protectTripmine(trip)
             activeTripmineProtections[trip] = nil
         end
     end)
+    table.insert(scriptConnections, conn)
 end
 
 local function protectBullet(b)
@@ -662,7 +678,7 @@ local function protectBullet(b)
     local sphere = createProtectionSphere(b, radius, Color3.fromRGB(255, 50, 50))
     activeBulletProtections[b] = { sphere = sphere, radius = radius }
 
-    b.Destroying:Connect(function()
+    local conn = b.Destroying:Connect(function()
         if activeBulletProtections[b] then
             if activeBulletProtections[b].sphere then
                 activeBulletProtections[b].sphere:Destroy()
@@ -670,6 +686,7 @@ local function protectBullet(b)
             activeBulletProtections[b] = nil
         end
     end)
+    table.insert(scriptConnections, conn)
 end
 
 local lastProtectionScan = 0
@@ -1125,9 +1142,10 @@ connections["MainHeartbeat"] = RunService.Heartbeat:Connect(function()
         end
     end
 end)
+table.insert(scriptConnections, connections["MainHeartbeat"])
 
 --------------------------------------------------------------------
--- Load Obsidian UI Library
+-- Load Obsidian UI Library Fast
 --------------------------------------------------------------------
 Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/ThemeManager.lua"))()
@@ -1138,20 +1156,15 @@ local Loading = Library:CreateLoading({
 })
 
 Loading:SetMessage("Initializing...")
-Loading:SetDescription("Waiting for game to load...")
-task.wait(1)
+Loading:SetDescription("Checking environment...")
 Loading:SetCurrentStep(1)
-Loading:SetDescription("Checking Place ID compatibility...")
-task.wait(3)
-Loading:SetCurrentStep(2)
 Loading:ShowSidebarPage(true)
 Loading.Sidebar:AddLabel("User: " .. game.Players.LocalPlayer.Name)
 Loading.Sidebar:AddLabel("Version: v1")
 Loading.Sidebar:AddLabel("Mode: " .. (isSupportedPlace and "Nullscape Gui" or "Universal Gui"))
-task.wait(2)
+Loading:SetCurrentStep(2)
 Loading:SetCurrentStep(3)
-Loading:SetDescription("Script has successfully loaded!")
-task.wait(1)
+Loading:SetDescription("Script loaded successfully!")
 Loading:SetCurrentStep(4)
 Loading:Continue()
 
@@ -1169,7 +1182,6 @@ if isSupportedPlace then
     Tabs.Playerlist = Window:AddTab("Main", "paw-print")
     Tabs.Enemies    = Window:AddTab("Enemies", "triangle-alert")
     Tabs.Map        = Window:AddTab("Map", "map")
-    Tabs.Music      = Window:AddTab("Music", "music")
     Tabs.Upgrades   = Window:AddTab("Upgrades", "shield-plus")
     Tabs.Debug      = Window:AddTab("Debug", "bug")
     Tabs.Settings   = Window:AddTab("Settings", "settings")
@@ -1202,6 +1214,7 @@ if isSupportedPlace then
                             if notifOn then notif("NewLevel sound detected. Auto-started normal gift collection.", "Collection System") end
                         end
                     end)
+                    table.insert(scriptConnections, connections["AutoStartCollectingConn"])
                 end
                 Library:Notify("Auto Start Collecting Enabled.", 2)
             else
@@ -1296,27 +1309,20 @@ if isSupportedPlace then
     FarmGroup:AddToggle("AutoFarmBetaToggle", {
         Text = "auto farm (beta)",
         Default = Settings.AutoFarmBeta,
-        Tooltip = "Auto enables start collecting, beacon TP, and auto void.",
+        Tooltip = "Auto enables start collecting and beacon TP.",
         Callback = function(Value)
             Settings.AutoFarmBeta = Value
             local autoStartTgl = getToggle("AutoStartCollectingToggle")
             local autoBeaconTgl = getToggle("AutoBeaconToggle")
-            local autoVoidInput = Options and Options.TargetLevelVoidInput
 
             if Value then
                 if autoStartTgl then autoStartTgl:SetValue(true) else Settings.AutoStartCollecting = true end
                 if autoBeaconTgl then autoBeaconTgl:SetValue(true) else Settings.AutoBeacon = true end
-                
-                Settings.TargetLevel = 1
-                if autoVoidInput then autoVoidInput:SetValue("1") end
 
                 Library:Notify("Auto Farm (Beta) Enabled.", 2)
             else
                 if autoStartTgl then autoStartTgl:SetValue(false) else Settings.AutoStartCollecting = false end
                 if autoBeaconTgl then autoBeaconTgl:SetValue(false) else Settings.AutoBeacon = false end
-
-                Settings.TargetLevel = nil
-                if autoVoidInput then autoVoidInput:SetValue("") end
 
                 Library:Notify("Auto Farm (Beta) Disabled.", 2)
             end
@@ -1385,6 +1391,24 @@ if isSupportedPlace then
         end
     })
 
+    PlayerGroup:AddSlider("GiftCollectionRange", {
+        Text = "Gift collection range",
+        Default = 1,
+        Min = 0,
+        Max = 10,
+        Rounding = 0,
+        Tooltip = "Adds 30 Magnet upgrades per slider tick (0 sets magnet upgrade to 1).",
+        Callback = function(Value)
+            local magnetAmount
+            if Value == 0 then
+                magnetAmount = 1
+            else
+                magnetAmount = Value * 30
+            end
+            applyUpgradeValue("GiftMagnet", magnetAmount, upgradeLabels["GiftMagnet"])
+        end
+    })
+
     -- Enemies Tab
     local EnemyControlGroup = Tabs.Enemies:AddLeftGroupbox("AI & Entity Disabler")
 
@@ -1398,6 +1422,7 @@ if isSupportedPlace then
                     connections["DisableEnemies"] = enemies.ChildAdded:Connect(function(child)
                         if disableAllEnemies then task.wait(0.1); disableEnemyEntity(child) end
                     end)
+                    table.insert(scriptConnections, connections["DisableEnemies"])
                 end
                 Library:Notify("Workspace Enemy AI disabled.", 3)
             else
@@ -1416,6 +1441,7 @@ if isSupportedPlace then
                 connections["DisableClientEnemies"] = RunService.Heartbeat:Connect(function()
                     if disableClientEnemies then processClientSideEnemies() end
                 end)
+                table.insert(scriptConnections, connections["DisableClientEnemies"])
                 Library:Notify("Client-sided enemies disabler activated.", 3)
             else
                 if connections["DisableClientEnemies"] then connections["DisableClientEnemies"]:Disconnect(); connections["DisableClientEnemies"] = nil end
@@ -1441,6 +1467,7 @@ if isSupportedPlace then
                             end)
                         end
                     end)
+                    table.insert(scriptConnections, connections["DeleteEnemies"])
                 end
                 Library:Notify("Auto-delete all enemies enabled (Guardian Protection active).", 3)
             else
@@ -1451,7 +1478,7 @@ if isSupportedPlace then
     })
 
     task.spawn(function()
-        while task.wait(0.5) do processPortedDisables() end
+        while task.wait(1) do processPortedDisables() end
     end)
 
     local EnemyActionGroup = Tabs.Enemies:AddRightGroupbox("Actions & Utilities")
@@ -1462,7 +1489,7 @@ if isSupportedPlace then
     local activeEnemiesLabel = ActiveEnemiesGroup:AddLabel("Scanning workspace...")
 
     task.spawn(function()
-        while task.wait(1) do
+        while task.wait(1.5) do
             if not enemies or #enemies:GetChildren() == 0 then
                 activeEnemiesLabel:SetText("<font color='#AAAAAA'>No active enemies</font>")
             else
@@ -1489,12 +1516,13 @@ if isSupportedPlace then
     local DetailedEnemyGroup = Tabs.Enemies:AddLeftGroupbox("Granular Enemy Options")
 
     task.spawn(function()
-        while task.wait(0.75) do
+        while task.wait(1) do
             if enemies then for _, enemy in ipairs(enemies:GetChildren()) do handleEnemy(enemy) end end
         end
     end)
     if enemies then
         connections["GranularChildAdded"] = enemies.ChildAdded:Connect(function(child) task.wait(0.1); handleEnemy(child) end)
+        table.insert(scriptConnections, connections["GranularChildAdded"])
     end
 
     local function addDetailedEnemy(group, name)
@@ -1563,12 +1591,6 @@ if isSupportedPlace then
     ExtraDisablesGroup:AddToggle("DisableFakeBeacons", { Text = "Disable Fake Beacons", Default = false, Callback = function(Value) disableFakeBeacons = Value end })
     ExtraDisablesGroup:AddToggle("DisableOblivion", { Text = "Disable Oblivion", Default = false, Callback = function(Value) disableOblivion = Value end })
 
-    -- Music Tab
-    local MusicGroup = Tabs.Music:AddLeftGroupbox("Playback")
-    MusicGroup:AddButton({ Text = "Play Track 1", Func = function() if music and music:IsA("Sound") then music:Play() end end })
-    MusicGroup:AddButton({ Text = "Stop Music", Func = function() if music and music:IsA("Sound") then music:Stop() end end })
-    MusicGroup:AddSlider("VolumeSlider", { Text = "Volume", Default = 50, Min = 0, Max = 100, Rounding = 0, Suffix = "%", Callback = function(Value) if music and music:IsA("Sound") then music.Volume = Value / 100 end end })
-
     -- Upgrades Tab
     local upgradeTabLeft = Tabs.Upgrades:AddLeftGroupbox("Upgrades Status")
     if upgradeTabLeft.Container then upgradeTabLeft.Container.AutomaticSize = Enum.AutomaticSize.Y end
@@ -1600,6 +1622,7 @@ if isSupportedPlace then
                 isSettingGuardValue[name] = false 
             end
         end)
+        table.insert(scriptConnections, upgradeValueGuards[name])
     end
 
     applyUpgradeValue = function(name, targetValue, uLabel)
@@ -1642,8 +1665,8 @@ if isSupportedPlace then
     end
 
     local function restoreAllUpgrades()
-        local upgradeFolderParent = ReplicatedStorage:WaitForChild("UpgradeFolder", 5)
-        local upgradesFolder = upgradeFolderParent and upgradeFolderParent:WaitForChild("Upgrades", 5)
+        local upgradeFolderParent = ReplicatedStorage:FindFirstChild("UpgradeFolder")
+        local upgradesFolder = upgradeFolderParent and upgradeFolderParent:FindFirstChild("Upgrades")
         for name, value in pairs(activeUpgrades) do
             if value > 0 then
                 if upgradesFolder then
@@ -1665,7 +1688,9 @@ if isSupportedPlace then
         updateActiveUpgradesDisplay()
     end
 
-    plr.CharacterAdded:Connect(function(newChar) task.wait(1); restoreAllUpgrades() end)
+    local charUpgradeConn = plr.CharacterAdded:Connect(function(newChar) task.wait(1); restoreAllUpgrades() end)
+    table.insert(scriptConnections, charUpgradeConn)
+
     local upgradeListGroup = Tabs.Upgrades:AddRightGroupbox("Available Upgrades")
 
     for _, u in ipairs(clientUpgrades) do
@@ -1725,15 +1750,15 @@ local uptimeLabel = DebugGroup:AddLabel("Server Uptime: Fetching...")
 local clientFPS = 0
 local frameCount = 0
 local lastFpsUpdate = os.clock()
-RunService.RenderStepped:Connect(function()
+local fpsConn = RunService.RenderStepped:Connect(function()
     frameCount += 1
     local now = os.clock()
     if now - lastFpsUpdate >= 1 then clientFPS = frameCount / (now - lastFpsUpdate); frameCount = 0; lastFpsUpdate = now end
 end)
+table.insert(scriptConnections, fpsConn)
 
 local serverLocation = "Estimating..."
 task.spawn(function()
-    task.wait(1)
     local playersList = Players:GetPlayers()
     if #playersList > 0 then
         local success, regionCode = pcall(function() return LocalizationService:GetCountryRegionForPlayerAsync(playersList[1]) end)
@@ -1762,7 +1787,7 @@ end
 DebugGroup:AddButton({ Text = "Refresh Info", Func = function() local data = getDebugData(); playerLabel:SetText("Players: " .. data.Players); pingLabel:SetText("Ping: " .. data.Ping); clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS); serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS); locationLabel:SetText("Server Region: " .. data.Location); uptimeLabel:SetText("Server Uptime: " .. data.Uptime); Library:Notify("Server Stats Refreshed!", 3) end })
 
 task.spawn(function()
-    while task.wait(1) do local data = getDebugData(); playerLabel:SetText("Players: " .. data.Players); pingLabel:SetText("Ping: " .. data.Ping); clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS); serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS); locationLabel:SetText("Server Region: " .. data.Location); uptimeLabel:SetText("Server Uptime: " .. data.Uptime) end
+    while task.wait(2) do local data = getDebugData(); playerLabel:SetText("Players: " .. data.Players); pingLabel:SetText("Ping: " .. data.Ping); clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS); serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS); locationLabel:SetText("Server Region: " .. data.Location); uptimeLabel:SetText("Server Uptime: " .. data.Uptime) end
 end)
 
 local DebugToolsGroup = Tabs.Debug:AddRightGroupbox("Developer Utilities")
@@ -1775,7 +1800,7 @@ DebugToolsGroup:AddButton({ Text = "Execute Infinite Yield", Func = function() p
 local memoryLabel = DebugToolsGroup:AddLabel("Memory Usage: Measuring...")
 local instancesLabel = DebugToolsGroup:AddLabel("Total Instances: Measuring...")
 task.spawn(function()
-    while task.wait(2) do
+    while task.wait(3) do
         pcall(function()
             local memMB = math.round(collectgarbage("count") / 1024)
             memoryLabel:SetText("Memory (Lua): " .. tostring(memMB) .. " MB")
@@ -1786,15 +1811,14 @@ end)
 
 local consoleLoggingActive = false
 local consoleConnection = nil
-DebugToolsGroup:AddToggle("ConsoleLoggerToggle", { Text = "Log Remote / Error Output", Default = false, Callback = function(Value) consoleLoggingActive = Value; if Value then consoleConnection = LogService.MessageOut:Connect(function(msg, msgType) if consoleLoggingActive then print("[NULL_DEBUG_LOG]: " .. msg) end end); Library:Notify("Console output logging enabled.", 3) else if consoleConnection then consoleConnection:Disconnect(); consoleConnection = nil end Library:Notify("Console output logging disabled.", 3) end end })
+DebugToolsGroup:AddToggle("ConsoleLoggerToggle", { Text = "Log Remote / Error Output", Default = false, Callback = function(Value) consoleLoggingActive = Value; if Value then consoleConnection = LogService.MessageOut:Connect(function(msg, msgType) if consoleLoggingActive then print("[NULL_DEBUG_LOG]: " .. msg) end end); table.insert(scriptConnections, consoleConnection); Library:Notify("Console output logging enabled.", 3) else if consoleConnection then consoleConnection:Disconnect(); consoleConnection = nil end Library:Notify("Console output logging disabled.", 3) end end })
 
 local SystemGroup = Tabs.Debug:AddRightGroupbox("System")
 SystemGroup:AddButton({
     Text = "Unload GUI",
     Func = function()
         logToggleActive = false; stopAllCollection()
-        for _, conn in pairs(connections) do if conn then conn:Disconnect() end end
-        for _, guard in pairs(upgradeValueGuards) do if guard then guard:Disconnect() end end
+        _G.NullGui_Cleanup()
         if consoleConnection then consoleConnection:Disconnect() end
         if persistentRespawnConnection then persistentRespawnConnection:Disconnect() end
 
