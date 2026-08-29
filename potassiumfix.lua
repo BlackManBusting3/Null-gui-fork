@@ -16,6 +16,24 @@ _G.NullGui_Cleanup = function()
 end
 
 --------------------------------------------------------------------
+-- Enhanced Logging System (Potassium / Mobile Safe)
+--------------------------------------------------------------------
+local function NULL_LOG(message, level)
+    level = level or "INFO"
+    local formatted = string.format("[NullGui - %s] %s", level, tostring(message))
+    print(formatted)
+    
+    -- Print to Developer Console safely
+    pcall(function()
+        if game:GetService("TestService") then
+            game:GetService("TestService"):Message(formatted)
+        end
+    end)
+end
+
+NULL_LOG("Initializing script startup sequence...")
+
+--------------------------------------------------------------------
 -- Services & Global Declarations
 --------------------------------------------------------------------
 local Players = game:GetService("Players")
@@ -244,18 +262,21 @@ local function getChar(player) return player and player.Character end
 local function getRoot(character) return character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character.PrimaryPart) end
 
 --------------------------------------------------------------------
--- Console Log Listener & Level Tracking
+-- Console Log Listener & Level Tracking (Pcall Wrapped)
 --------------------------------------------------------------------
-connections["LevelLogListener"] = LogService.MessageOut:Connect(function(msg, msgType)
-    local lvlStr = string.match(msg, "Level%s*(%d+)")
-    if lvlStr then
-        local lvl = tonumber(lvlStr)
-        if lvl then
-            currentObservedLevel = lvl
+pcall(function()
+    connections["LevelLogListener"] = LogService.MessageOut:Connect(function(msg, msgType)
+        local lvlStr = string.match(msg, "Level%s*(%d+)")
+        if lvlStr then
+            local lvl = tonumber(lvlStr)
+            if lvl then
+                currentObservedLevel = lvl
+                NULL_LOG("Level state updated: " .. tostring(lvl))
+            end
         end
-    end
+    end)
+    table.insert(scriptConnections, connections["LevelLogListener"])
 end)
-table.insert(scriptConnections, connections["LevelLogListener"])
 
 local function executeVoidKill()
     local killVoid = workspace:FindFirstChild("KillVoid")
@@ -266,6 +287,7 @@ local function executeVoidKill()
     if killVoid and root and hum and hum.Health > 0 then
         local targetPosition = killVoid.Position + Vector3.new(0, 20, 0)
         root.CFrame = CFrame.new(targetPosition)
+        NULL_LOG("Executed void reset.")
     end
 end
 
@@ -604,7 +626,7 @@ local function logSelectAttributes()
 
         if #outputSections > 0 then
             local fullBlock = table.concat(outputSections, "\n\n\n") .. "\n\n\n"
-            print("[Debug Attributes Output]:\n" .. fullBlock)
+            NULL_LOG("Select attributes logged:\n" .. fullBlock)
             if type(writefile) == "function" and type(appendfile) == "function" then
                 pcall(function()
                     local hasIsFile = type(isfile) == "function"
@@ -739,6 +761,8 @@ local Library
 local function notif(msg, title)
     if Library and Library.Notify then
         pcall(function() Library:Notify(string.format("[%s]: %s", title or "System", msg), 3) end)
+    else
+        NULL_LOG(string.format("[%s]: %s", title or "System", msg))
     end
 end
 
@@ -1142,42 +1166,36 @@ end)
 table.insert(scriptConnections, connections["MainHeartbeat"])
 
 --------------------------------------------------------------------
--- Load Obsidian UI Library Safely
+-- Load Obsidian UI Library Safely (Potassium Crash Shield)
 --------------------------------------------------------------------
+NULL_LOG("Attempting HTTP fetch of Obsidian UI components...")
+
 local success, result = pcall(function()
-    Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"))()
-    local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/ThemeManager.lua"))()
-    local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua"))()
+    local libSource = game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua")
+    local themeSource = game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/ThemeManager.lua")
+    local saveSource = game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua")
+
+    Library = loadstring(libSource)()
+    local ThemeManager = loadstring(themeSource)()
+    local SaveManager = loadstring(saveSource)()
     return ThemeManager, SaveManager
 end)
 
 if not success or not Library then
-    warn("Failed to load Obsidian UI library on Potassium:", result)
+    NULL_LOG("Execution failed while fetching Obsidian UI: " .. tostring(result), "ERROR")
     return
 end
 
+NULL_LOG("Obsidian UI successfully compiled.")
+
 local ThemeManager, SaveManager = result[1], result[2]
 
-local Loading = Library:CreateLoading({
-    Title = "Null GUI - Java.", Icon = "7476151111", TotalSteps = 4
-})
-
-Loading:SetMessage("Initializing...")
-Loading:SetDescription("Checking environment...")
-Loading:SetCurrentStep(1)
-Loading:ShowSidebarPage(true)
-Loading.Sidebar:AddLabel("User: " .. game.Players.LocalPlayer.Name)
-Loading.Sidebar:AddLabel("Version: v1")
-Loading.Sidebar:AddLabel("Mode: " .. (isSupportedPlace and "Nullscape Gui" or "Universal Gui"))
-Loading:SetCurrentStep(2)
-Loading:SetCurrentStep(3)
-Loading:SetDescription("Script loaded successfully!")
-Loading:SetCurrentStep(4)
-Loading:Continue()
-
 local Window = Library:CreateWindow({
-    Title = "Java's Null Gui", Footer = string.format("%s | %d | %s | v1", gameName, PlaceId, JobId ~= "" and JobId or "Solo"),
-    Icon = "cat", Center = true, AutoShow = true,
+    Title = "Java's Null Gui", 
+    Footer = string.format("%s | %d | %s | v1", gameName, PlaceId, JobId ~= "" and JobId or "Solo"),
+    Icon = "cat", 
+    Center = true, 
+    AutoShow = true,
 })
 
 --------------------------------------------------------------------
@@ -1220,13 +1238,13 @@ if isSupportedPlace then
                     end)
                     table.insert(scriptConnections, connections["AutoStartCollectingConn"])
                 end
-                Library:Notify("Auto Start Collecting Enabled.", 2)
+                notif("Auto Start Collecting Enabled.", "System")
             else
                 if connections["AutoStartCollectingConn"] then
                     pcall(function() connections["AutoStartCollectingConn"]:Disconnect() end)
                     connections["AutoStartCollectingConn"] = nil
                 end
-                Library:Notify("Auto Start Collecting Disabled.", 2)
+                notif("Auto Start Collecting Disabled.", "System")
             end
         end
     })
@@ -1273,7 +1291,7 @@ if isSupportedPlace then
         Tooltip = "Uses PathfindingService to naturally walk to gifts instead of teleporting.",
         Callback = function(Value)
             Settings.LegitCollection = Value
-            if Value then Library:Notify("Legit Pathfinding Mode Enabled.", 2) end
+            if Value then notif("Legit Pathfinding Mode Enabled.", "System") end
         end
     })
 
@@ -1281,19 +1299,19 @@ if isSupportedPlace then
         Default = tostring(Settings.LegitSpeed), Numeric = true, Finished = true, Text = "Legit WalkSpeed",
         Placeholder = "16...", Callback = function(Value)
             local num = tonumber(Value)
-            if num and num > 0 then Settings.LegitSpeed = num; Library:Notify("Legit Speed set to " .. tostring(num), 2) end
+            if num and num > 0 then Settings.LegitSpeed = num; notif("Legit Speed set to " .. tostring(num), "System") end
         end
     })
 
     GiftGroup:AddToggle("AutoBeaconToggle", { Text = "<font color='#00FF00'>Walk/TP To Beacon On Finish</font>", Default = Settings.AutoBeacon, Callback = function(Value) Settings.AutoBeacon = Value end })
-    GiftGroup:AddButton({ Text = "<font color='#FF4444'>Cancel Gift Collection</font>", Func = function() stopAllCollection(); Library:Notify("Cancelled gift collection.", 2) end })
+    GiftGroup:AddButton({ Text = "<font color='#FF4444'>Cancel Gift Collection</font>", Func = function() stopAllCollection(); notif("Cancelled gift collection.", "System") end })
     GiftGroup:AddToggle("InstantTPToggle", { Text = "Instant Teleport Collection", Default = Settings.InstantTeleport, Callback = function(Value) Settings.InstantTeleport = Value end })
 
     GiftGroup:AddInput("TweenSpeedInput", {
         Default = tostring(Settings.TweenSpeed), Numeric = true, Finished = true, Text = "Tween Speed (If TP Off)",
         Placeholder = "300...", Callback = function(Value)
             local num = tonumber(Value)
-            if num and num > 0 then Settings.TweenSpeed = num; Library:Notify("Tween Speed set to " .. tostring(num), 2) end
+            if num and num > 0 then Settings.TweenSpeed = num; notif("Tween Speed set to " .. tostring(num), "System") end
         end
     })
 
@@ -1301,7 +1319,7 @@ if isSupportedPlace then
         Default = tostring(Settings.DelayBetweenGifts), Numeric = true, Finished = true, Text = "Teleport Delay (Seconds)",
         Placeholder = "0.05...", Callback = function(Value)
             local num = tonumber(Value)
-            if num and num >= 0 then Settings.DelayBetweenGifts = num; Library:Notify("Teleport Delay set to " .. tostring(num) .. "s", 2) end
+            if num and num >= 0 then Settings.DelayBetweenGifts = num; notif("Teleport Delay set to " .. tostring(num) .. "s", "System") end
         end
     })
 
@@ -1320,12 +1338,12 @@ if isSupportedPlace then
                 if autoStartTgl then autoStartTgl:SetValue(true) else Settings.AutoStartCollecting = true end
                 if autoBeaconTgl then autoBeaconTgl:SetValue(true) else Settings.AutoBeacon = true end
 
-                Library:Notify("Auto Farm (Beta) Enabled.", 2)
+                notif("Auto Farm (Beta) Enabled.", "System")
             else
                 if autoStartTgl then autoStartTgl:SetValue(false) else Settings.AutoStartCollecting = false end
                 if autoBeaconTgl then autoBeaconTgl:SetValue(false) else Settings.AutoBeacon = false end
 
-                Library:Notify("Auto Farm (Beta) Disabled.", 2)
+                notif("Auto Farm (Beta) Disabled.", "System")
             end
         end
     })
@@ -1341,10 +1359,10 @@ if isSupportedPlace then
             local num = tonumber(Value)
             if num and num > 0 then
                 Settings.TargetLevel = num
-                Library:Notify("Auto Void set for Level " .. tostring(num), 2)
+                notif("Auto Void set for Level " .. tostring(num), "System")
             else
                 Settings.TargetLevel = nil
-                Library:Notify("Auto Void Level disabled.", 2)
+                notif("Auto Void Level disabled.", "System")
             end
         end
     })
@@ -1413,10 +1431,10 @@ if isSupportedPlace then
                     end)
                     table.insert(scriptConnections, connections["DisableEnemies"])
                 end
-                Library:Notify("Workspace Enemy AI disabled.", 3)
+                notif("Workspace Enemy AI disabled.", "Enemies")
             else
                 if connections["DisableEnemies"] then pcall(function() connections["DisableEnemies"]:Disconnect() end); connections["DisableEnemies"] = nil end
-                Library:Notify("Workspace Enemy AI re-enabled.", 3)
+                notif("Workspace Enemy AI re-enabled.", "Enemies")
             end
         end
     })
@@ -1431,10 +1449,10 @@ if isSupportedPlace then
                     if disableClientEnemies then processClientSideEnemies() end
                 end)
                 table.insert(scriptConnections, connections["DisableClientEnemies"])
-                Library:Notify("Client-sided enemies disabler activated.", 3)
+                notif("Client-sided enemies disabler activated.", "Enemies")
             else
                 if connections["DisableClientEnemies"] then pcall(function() connections["DisableClientEnemies"]:Disconnect() end); connections["DisableClientEnemies"] = nil end
-                Library:Notify("Client-sided enemies disabler stopped.", 3)
+                notif("Client-sided enemies disabler stopped.", "Enemies")
             end
         end
     })
@@ -1458,10 +1476,10 @@ if isSupportedPlace then
                     end)
                     table.insert(scriptConnections, connections["DeleteEnemies"])
                 end
-                Library:Notify("Auto-delete all enemies enabled (Guardian Protection active).", 3)
+                notif("Auto-delete all enemies enabled (Guardian Protection active).", "Enemies")
             else
                 if connections["DeleteEnemies"] then pcall(function() connections["DeleteEnemies"]:Disconnect() end); connections["DeleteEnemies"] = nil end
-                Library:Notify("Auto-delete all enemies disabled.", 3)
+                notif("Auto-delete all enemies disabled.", "Enemies")
             end
         end
     })
@@ -1471,8 +1489,8 @@ if isSupportedPlace then
     end)
 
     local EnemyActionGroup = Tabs.Enemies:AddRightGroupbox("Actions & Utilities")
-    EnemyActionGroup:AddButton({ Text = "Purge All Existing Enemies", Func = function() local count = purgeExistingEnemies(); Library:Notify("Purged " .. tostring(count) .. " enemies from workspace.", 3) end })
-    EnemyActionGroup:AddButton({ Text = "Refresh Target List", Func = function() Library:Notify("Refreshed active enemy cache.", 2) end })
+    EnemyActionGroup:AddButton({ Text = "Purge All Existing Enemies", Func = function() local count = purgeExistingEnemies(); notif("Purged " .. tostring(count) .. " enemies from workspace.", "Enemies") end })
+    EnemyActionGroup:AddButton({ Text = "Refresh Target List", Func = function() notif("Refreshed active enemy cache.", "Enemies") end })
 
     local ActiveEnemiesGroup = Tabs.Enemies:AddRightGroupbox("Active Enemies")
     local activeEnemiesLabel = ActiveEnemiesGroup:AddLabel("Scanning workspace...")
@@ -1625,7 +1643,7 @@ if isSupportedPlace then
                 intv = Instance.new("IntValue") 
                 intv.Name = name 
                 intv.Value = targetValue 
-                if upgradesFolder then intv.Parent = upgradesFolder end 
+                if upgradesFolder then pcall(function() intv.Parent = upgradesFolder end) end 
             end
             setupUpgradeGuardian(intv, name)
             if events and events:FindFirstChild("UpgradesChanged") then 
@@ -1656,7 +1674,7 @@ if isSupportedPlace then
             if value > 0 then
                 if upgradesFolder then
                     local intv = upgradesFolder:FindFirstChild(name)
-                    if not intv then intv = Instance.new("IntValue"); intv.Name = name; intv.Parent = upgradesFolder end
+                    if not intv then intv = Instance.new("IntValue"); intv.Name = name; pcall(function() intv.Parent = upgradesFolder end) end
                     isSettingGuardValue[name] = true 
                     intv.Value = value 
                     isSettingGuardValue[name] = false
@@ -1716,7 +1734,7 @@ else
     local selectedPlayer = nil
     TeleportGroup:AddDropdown("TargetPlayerDropdown", { Text = "Select Player to TP", Values = getPlayerNames(), Default = 1, Callback = function(Value) selectedPlayer = Value end })
     TeleportGroup:AddButton({ Text = "Refresh Player List", Func = function() if Options and Options.TargetPlayerDropdown then Options.TargetPlayerDropdown:SetValues(getPlayerNames()) end end })
-    TeleportGroup:AddButton({ Text = "Teleport to Player", Func = function() if selectedPlayer then local targetPlr = Players:FindFirstChild(selectedPlayer) if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame; Library:Notify("Teleported to " .. selectedPlayer, 3) end end end })
+    TeleportGroup:AddButton({ Text = "Teleport to Player", Func = function() if selectedPlayer then local targetPlr = Players:FindFirstChild(selectedPlayer) if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame; notif("Teleported to " .. selectedPlayer, "Teleport") end end end })
     TeleportGroup:AddButton({ Text = "Rejoin Server", Func = function() TeleportService:TeleportToPlaceInstance(PlaceId, JobId, plr) end })
     TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/0?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, s in ipairs(servers.data) do if s.id ~= JobId and s.playing < s.maxPlayers then TeleportService:TeleportToPlaceInstance(PlaceId, s.id, plr); break end end end end })
 end
@@ -1769,18 +1787,18 @@ local function getDebugData()
     return { Players = string.format("%d/%d", #currentPlayers, Players.MaxPlayers), Ping = string.format("%d ms", ping), ClientFPS = math.round(clientFPS), ServerFPS = serverFPS, Location = serverLocation, Uptime = formatUptime(uptimeSeconds), PlayerList = currentPlayers }
 end
 
-DebugGroup:AddButton({ Text = "Refresh Info", Func = function() local data = getDebugData(); playerLabel:SetText("Players: " .. data.Players); pingLabel:SetText("Ping: " .. data.Ping); clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS); serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS); locationLabel:SetText("Server Region: " .. data.Location); uptimeLabel:SetText("Server Uptime: " .. data.Uptime); Library:Notify("Server Stats Refreshed!", 3) end })
+DebugGroup:AddButton({ Text = "Refresh Info", Func = function() local data = getDebugData(); playerLabel:SetText("Players: " .. data.Players); pingLabel:SetText("Ping: " .. data.Ping); clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS); serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS); locationLabel:SetText("Server Region: " .. data.Location); uptimeLabel:SetText("Server Uptime: " .. data.Uptime); notif("Server Stats Refreshed!", "System") end })
 
 task.spawn(function()
     while task.wait(2) do local data = getDebugData(); playerLabel:SetText("Players: " .. data.Players); pingLabel:SetText("Ping: " .. data.Ping); clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS); serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS); locationLabel:SetText("Server Region: " .. data.Location); uptimeLabel:SetText("Server Uptime: " .. data.Uptime) end
 end)
 
 local DebugToolsGroup = Tabs.Debug:AddRightGroupbox("Developer Utilities")
-DebugToolsGroup:AddToggle("AutoLogAttributesToggle", { Text = "Log Select Attributes (Every 10s)", Default = false, Callback = function(Value) logToggleActive = Value; if Value then Library:Notify("Auto Select attribute logging started (10s interval).", 3); task.spawn(function() while logToggleActive do logSelectAttributes(); task.wait(10) end end) else Library:Notify("Auto Select attribute logging stopped.", 3) end end })
-DebugToolsGroup:AddButton({ Text = "Log Select Attributes (Once)", Func = function() logSelectAttributes(); Library:Notify("Logged Select attributes to file/console.", 3) end })
-DebugToolsGroup:AddButton({ Text = "Execute Remote Spy (Cobalt)", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/lesingee/cobalt/refs/heads/main/loader.lua"))() end); Library:Notify("Executed Cobalt Remote Spy.", 3) end })
-DebugToolsGroup:AddButton({ Text = "Execute Dex (Dex++)", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/Babyhamsta/RBLX_Scripts/main/Universal/BypassedDarkDexV3.lua"))() end); Library:Notify("Executed Dex++ Explorer.", 3) end })
-DebugToolsGroup:AddButton({ Text = "Execute Infinite Yield", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))() end); Library:Notify("Executed Infinite Yield.", 3) end })
+DebugToolsGroup:AddToggle("AutoLogAttributesToggle", { Text = "Log Select Attributes (Every 10s)", Default = false, Callback = function(Value) logToggleActive = Value; if Value then notif("Auto Select attribute logging started (10s interval).", "Debug"); task.spawn(function() while logToggleActive do logSelectAttributes(); task.wait(10) end end) else notif("Auto Select attribute logging stopped.", "Debug") end end })
+DebugToolsGroup:AddButton({ Text = "Log Select Attributes (Once)", Func = function() logSelectAttributes(); notif("Logged Select attributes to file/console.", "Debug") end })
+DebugToolsGroup:AddButton({ Text = "Execute Remote Spy (Cobalt)", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/lesingee/cobalt/refs/heads/main/loader.lua"))() end); notif("Executed Cobalt Remote Spy.", "Debug") end })
+DebugToolsGroup:AddButton({ Text = "Execute Dex (Dex++)", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/Babyhamsta/RBLX_Scripts/main/Universal/BypassedDarkDexV3.lua"))() end); notif("Executed Dex++ Explorer.", "Debug") end })
+DebugToolsGroup:AddButton({ Text = "Execute Infinite Yield", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))() end); notif("Executed Infinite Yield.", "Debug") end })
 
 local memoryLabel = DebugToolsGroup:AddLabel("Memory Usage: Measuring...")
 local instancesLabel = DebugToolsGroup:AddLabel("Total Instances: Measuring...")
@@ -1796,7 +1814,7 @@ end)
 
 local consoleLoggingActive = false
 local consoleConnection = nil
-DebugToolsGroup:AddToggle("ConsoleLoggerToggle", { Text = "Log Remote / Error Output", Default = false, Callback = function(Value) consoleLoggingActive = Value; if Value then consoleConnection = LogService.MessageOut:Connect(function(msg, msgType) if consoleLoggingActive then print("[NULL_DEBUG_LOG]: " .. msg) end end); table.insert(scriptConnections, consoleConnection); Library:Notify("Console output logging enabled.", 3) else if consoleConnection then pcall(function() consoleConnection:Disconnect() end); consoleConnection = nil end Library:Notify("Console output logging disabled.", 3) end end })
+DebugToolsGroup:AddToggle("ConsoleLoggerToggle", { Text = "Log Remote / Error Output", Default = false, Callback = function(Value) consoleLoggingActive = Value; if Value then pcall(function() consoleConnection = LogService.MessageOut:Connect(function(msg, msgType) if consoleLoggingActive then NULL_LOG("[OUTPUT_LOG]: " .. msg) end end); table.insert(scriptConnections, consoleConnection) end) notif("Console output logging enabled.", "Debug") else if consoleConnection then pcall(function() consoleConnection:Disconnect() end); consoleConnection = nil end notif("Console output logging disabled.", "Debug") end end })
 
 local SystemGroup = Tabs.Debug:AddRightGroupbox("System")
 SystemGroup:AddButton({
@@ -1830,16 +1848,14 @@ SystemGroup:AddButton({
 })
 
 local SettingsGroup = Tabs.Settings:AddLeftGroupbox("GUI Settings")
-SettingsGroup:AddToggle("ExampleToggle", { Text = "TBA", Default = false, Callback = function(Value) end })
-SettingsGroup:AddDropdown("ExampleDropdown", { Text = "Choose Mode", Values = {"Mode A", "Mode B", "Mode C"}, Default = 1, Callback = function(Value) end })
-SettingsGroup:AddKeyPicker("ExampleKeybind", { Default = "K", Text = "Toggle Menu Keybind", Callback = function(Value) end })
 
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({"ExampleKeybind"})
-ThemeManager:SetFolder("NullGuiConfig")
+SaveManager:SetFolder("NullGuiConfig")
 SaveManager:SetFolder("NullGuiConfig/" .. tostring(PlaceId))
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings)
-SaveManager:LoadAutoloadConfig()
+pcall(function() SaveManager:LoadAutoloadConfig() end)
+
+NULL_LOG("Script successfully loaded and rendered on Potassium.")
