@@ -153,6 +153,7 @@ local Settings = {
     AutoBeacon = false,
     AutoStartCollecting = false,
     AutoFarmBeta = false,
+    AutoPylon = false,
     TargetLevel = nil,
     EnemiesWhitelist = {},
     CursesWhitelist = {},
@@ -238,6 +239,117 @@ end
 
 local function getChar(player) return player and player.Character end
 local function getRoot(character) return character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character.PrimaryPart) end
+
+--------------------------------------------------------------------
+-- Pylon Helper Functions
+--------------------------------------------------------------------
+local function findPylons()
+    local found = {}
+    local searchContainers = {
+        workspace:FindFirstChild("Pylons"),
+        workspace:FindFirstChild("PylonFolder"),
+        workspace:FindFirstChild("Item_Pools"),
+        workspace
+    }
+    for _, container in ipairs(searchContainers) do
+        if container then
+            for _, obj in ipairs(container:GetChildren()) do
+                if obj.Name:lower():find("pylon") then
+                    table.insert(found, obj)
+                end
+            end
+        end
+    end
+    return found
+end
+
+local function interactWithPylon(pylon)
+    if not pylon or not pylon.Parent then return end
+    local part = pylon:IsA("BasePart") and pylon or pylon:FindFirstChildWhichIsA("BasePart") or pylon.PrimaryPart
+    if not part then return end
+
+    local char = getChar(plr)
+    local root = getRoot(char)
+    if root then
+        root.CFrame = part.CFrame + Vector3.new(0, 3, 0)
+    end
+    task.wait(0.1)
+
+    local prompt = pylon:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt then
+        pcall(function()
+            if fireproximityprompt then
+                fireproximityprompt(prompt)
+            else
+                prompt:InputHoldBegin()
+                task.wait(prompt.HoldDuration)
+                prompt:InputHoldEnd()
+            end
+        end)
+    else
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+        task.wait(0.05)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+    end
+end
+
+local function teleportToNearestPylon()
+    local pylons = findPylons()
+    if #pylons == 0 then
+        if Library and Library.Notify then Library:Notify("No Pylons found in workspace.", 3) end
+        return false
+    end
+
+    local char = getChar(plr)
+    local root = getRoot(char)
+    if not root then return false end
+
+    local closest, shortestDist = nil, math.huge
+    for _, pylon in ipairs(pylons) do
+        local part = pylon:IsA("BasePart") and pylon or pylon:FindFirstChildWhichIsA("BasePart") or pylon.PrimaryPart
+        if part then
+            local dist = (part.Position - root.Position).Magnitude
+            if dist < shortestDist then
+                shortestDist = dist
+                closest = pylon
+            end
+        end
+    end
+
+    if closest then
+        interactWithPylon(closest)
+        if Library and Library.Notify then Library:Notify("Teleported to Pylon: " .. closest.Name, 3) end
+        return true
+    end
+    return false
+end
+
+local isProcessingPylons = false
+local function processAutoPylon()
+    if not Settings.AutoPylon or isProcessingPylons then return end
+    local pylons = findPylons()
+    if #pylons > 0 then
+        isProcessingPylons = true
+        task.spawn(function()
+            for _, pylon in ipairs(pylons) do
+                if not Settings.AutoPylon then break end
+                if pylon and pylon.Parent then
+                    interactWithPylon(pylon)
+                    task.wait(0.5)
+                end
+            end
+            isProcessingPylons = false
+        end)
+    end
+end
+
+connections["PylonAddedListener"] = workspace.ChildAdded:Connect(function(child)
+    if Settings.AutoPylon and child.Name:lower():find("pylon") then
+        task.wait(0.1)
+        interactWithPylon(child)
+    end
+end)
+table.insert(scriptConnections, connections["PylonAddedListener"])
 
 --------------------------------------------------------------------
 -- Console Log Listener & Level Tracking
@@ -1122,6 +1234,7 @@ connections["MainHeartbeat"] = RunService.Heartbeat:Connect(function()
     processProtections()
     processAntiVoid()
     checkAndVoteSelectParts()
+    processAutoPylon()
 
     local char = getChar(plr)
     local root = getRoot(char)
@@ -1325,6 +1438,28 @@ if isSupportedPlace then
                 if autoBeaconTgl then autoBeaconTgl:SetValue(false) else Settings.AutoBeacon = false end
 
                 Library:Notify("Auto Farm (Beta) Disabled.", 2)
+            end
+        end
+    })
+
+    FarmGroup:AddButton({
+        Text = "Teleport to Pylon",
+        Func = function()
+            teleportToNearestPylon()
+        end
+    })
+
+    FarmGroup:AddToggle("AutoPylonToggle", {
+        Text = "Teleport to pylon",
+        Default = Settings.AutoPylon,
+        Tooltip = "Teleports to and completes pylons one by one as they spawn.",
+        Callback = function(Value)
+            Settings.AutoPylon = Value
+            if Value then
+                Library:Notify("Auto Teleport to Pylon Enabled.", 2)
+                teleportToNearestPylon()
+            else
+                Library:Notify("Auto Teleport to Pylon Disabled.", 2)
             end
         end
     })
