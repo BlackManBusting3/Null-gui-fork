@@ -178,6 +178,9 @@ local deleteAllEnemies = false     -- Disabled by default
 local disableClientEnemies = false
 local autoDestroySpawns = false
 
+-- Razorbloom destroy state
+local nrb = false
+
 -- Tile connections state
 local antiFleshTilesEnabled = false
 local persistentTileConnections = false
@@ -240,6 +243,24 @@ end
 
 local function getChar(player) return player and player.Character end
 local function getRoot(character) return character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character.PrimaryPart) end
+
+--------------------------------------------------------------------
+-- Razorbloom Destroy Function
+--------------------------------------------------------------------
+local function destroyRazorbloom()
+    if not nrb then return end
+    
+    local char = getChar(plr)
+    if not char then return end
+    
+    local rb = char:FindFirstChild("Razorbloom")
+    if rb then
+        rb:Destroy()
+        if notifOn then
+            notif("Destroyed Razorbloom from character.", "Razorbloom System")
+        end
+    end
+end
 
 --------------------------------------------------------------------
 -- Pylon Helper Functions
@@ -492,6 +513,12 @@ local function setupCharacter(char)
         end)
         table.insert(scriptConnections, conn)
     end
+    
+    -- Check for Razorbloom on character spawn
+    if nrb then
+        task.wait(0.5)
+        destroyRazorbloom()
+    end
 end
 
 local charConn = plr.CharacterAdded:Connect(setupCharacter)
@@ -642,6 +669,19 @@ local function checkAndVoteSelectParts()
 
                 local targetPartName = nil
                 local anyWhitelistActive = hasAnyActiveWhitelist()
+                local isCurseOrEnemySelection = false
+
+                -- Check if current selection contains curses or enemies
+                for _, name in ipairs({"1", "2"}) do
+                    local part = selectFolder:FindFirstChild(name)
+                    if part then
+                        local choiceType = tostring(part:GetAttribute("ChoiceType") or "")
+                        if choiceType:upper():find("CURSE") or choiceType:upper():find("ENEM") then
+                            isCurseOrEnemySelection = true
+                            break
+                        end
+                    end
+                end
 
                 -- 1. Check Medal Curse overrides first
                 for _, name in ipairs({"1", "2"}) do
@@ -692,7 +732,8 @@ local function checkAndVoteSelectParts()
                     -- If it failed, it logged to `failedParts` table, will loop back and naturally fallback to `[2]` or random/reroll/3.
                 else
                     -- 4. If whitelists active but none match (or they both failed), resort to Reroll
-                    if rerollPart and rerollCount < maxRerolls and anyWhitelistActive then
+                    -- BUT ONLY if it's NOT a curse or enemy selection
+                    if rerollPart and rerollCount < maxRerolls and anyWhitelistActive and not isCurseOrEnemySelection then
                         rerollCount = rerollCount + 1
                         local char = plr.Character
                         local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
@@ -720,6 +761,24 @@ local function checkAndVoteSelectParts()
                     end
 
                     -- 5. Fallback to [3] (start game) if nothing else is left to buy/reroll
+                    -- OR if it's a curse/enemy selection (don't reroll, just pick randomly)
+                    if isCurseOrEnemySelection and not targetPartName then
+                        -- For curse/enemy selections without whitelist match, pick randomly
+                        local validParts = {}
+                        for _, name in ipairs({"1", "2"}) do
+                            if not failedParts[name] and selectFolder:FindFirstChild(name) then
+                                table.insert(validParts, name)
+                            end
+                        end
+                        if #validParts > 0 then
+                            targetPartName = validParts[math.random(1, #validParts)]
+                            local success = attemptBuy(targetPartName)
+                            if success then
+                                continue
+                            end
+                        end
+                    end
+                    
                     if part3 then
                         attemptBuy("3") -- We apply standard fallback interaction wrapper to [3] as well
                     end
@@ -1297,6 +1356,7 @@ connections["MainHeartbeat"] = RunService.Heartbeat:Connect(function()
     processAntiVoid()
     checkAndVoteSelectParts()
     processAutoPylon()
+    destroyRazorbloom()
 
     local char = getChar(plr)
     local root = getRoot(char)
@@ -1588,6 +1648,21 @@ if isSupportedPlace then
             if not Value then
                 velocityPart.Transparency = 1
                 vpBox.Transparency = 1
+            end
+        end
+    })
+
+    PlayerGroup:AddToggle("DestroyRazorbloomToggle", {
+        Text = "<font color='#FF6666'>Destroy Razorbloom (VISIBLE TO OTHERS)</font>",
+        Default = nrb,
+        Tooltip = "Automatically destroys Razorbloom objects from your character when they appear.",
+        Callback = function(Value)
+            nrb = Value
+            if Value then
+                destroyRazorbloom()
+                Library:Notify("Razorbloom Destroyer enabled.", 2)
+            else
+                Library:Notify("Razorbloom Destroyer disabled.", 2)
             end
         end
     })
@@ -2041,6 +2116,7 @@ SystemGroup:AddButton({
             end
         end
         table.clear(activeUpgrades)
+        nrb = false  -- Reset Razorbloom state on unload
         Library:Unload()
     end
 })
