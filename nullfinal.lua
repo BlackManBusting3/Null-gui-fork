@@ -140,19 +140,19 @@ vpBox.Adornee = velocityPart
 vpBox.Parent = velocityPart
 
 --------------------------------------------------------------------
--- Integrated Settings & State Flags
+-- Integrated Settings & State Flags (FIXED DEFAULTS)
 --------------------------------------------------------------------
 local Settings = {
-    CollectNormal = false,
+    CollectNormal = false,         -- Disabled by default
     CollectGolden = false,
     LegitCollection = false,
     LegitSpeed = 16,
     InstantTeleport = true, 
     TweenSpeed = 60,        
     DelayBetweenGifts = 0.05,
-    AutoBeacon = false,
-    AutoStartCollecting = false,
-    AutoFarmBeta = false,
+    AutoBeacon = false,            -- Disabled by default
+    AutoStartCollecting = false,   -- Disabled by default
+    AutoFarmBeta = false,          -- Disabled by default
     AutoPylon = false,
     TargetLevel = nil,
     EnemiesWhitelist = {},
@@ -173,7 +173,7 @@ local notifOn = true
 local destroying = false
 
 local disableAllEnemies = false
-local deleteAllEnemies = false
+local deleteAllEnemies = false     -- Disabled by default
 local disableClientEnemies = false
 local autoDestroySpawns = false
 
@@ -210,7 +210,7 @@ local auto_destroy = {
 }
 
 local pt = false
-local pb = false
+local pb = false                   -- Guardian Protection disabled by default
 local velov = false
 local connections = {}
 local activeUpgrades = {}
@@ -500,7 +500,7 @@ if plr.Character then
 end
 
 --------------------------------------------------------------------
--- Auto Farm Engine
+-- Auto Farm Engine (UPDATED ADVANCED FAIL-DETECTION & REROLL)
 --------------------------------------------------------------------
 local function isValueWhitelisted(value, whitelistTable)
     if not value or not whitelistTable then return false end
@@ -508,6 +508,18 @@ local function isValueWhitelisted(value, whitelistTable)
     for itemKey, isSelected in pairs(whitelistTable) do
         if isSelected and tostring(itemKey):lower() == searchVal then
             return true
+        end
+    end
+    return false
+end
+
+local function hasAnyActiveWhitelist()
+    local tables = {Settings.EnemiesWhitelist, Settings.CursesWhitelist, Settings.UpgradesWhitelist}
+    for _, tbl in ipairs(tables) do
+        if tbl then
+            for _, isSelected in pairs(tbl) do
+                if isSelected then return true end
+            end
         end
     end
     return false
@@ -589,80 +601,130 @@ local function checkAndVoteSelectParts()
     isAutoFarmProcessing = true
     task.spawn(function()
         pcall(function()
-            local processedParts = {}
+            local maxRerolls = 5
+            local rerollCount = 0
+            local maxIterations = 25
+            local iteration = 0
+            
+            -- Table to track which selections failed consecutively 4 times
+            local failedParts = {}
 
-            local function evaluateAndProcessParts()
-                for _, partName in ipairs({"1", "2"}) do
-                    local part = selectFolder:FindFirstChild(partName)
-                    if part then
-                        local choiceName = tostring(part:GetAttribute("ChoiceName") or "")
-                        if choiceName:lower():find("medalcurse") or choiceName:lower():find("medalcurses") then
-                            local randomName = tostring(math.random(1, 2))
-                            local chosenPart = selectFolder:FindFirstChild(randomName) or part
-                            if chosenPart and not processedParts[chosenPart] then
-                                processedParts[chosenPart] = true
-                                interactWithPart(chosenPart)
-                                task.wait(1.5)
-                                return true
+            -- Helper to attempt to purchase a specific part precisely 4 times (1s interval)
+            local function attemptBuy(partName)
+                local attempts = 0
+                while attempts < 4 and Settings.AutoFarmBeta do
+                    local sFolder = workspace:FindFirstChild("Select")
+                    if not sFolder then return true end -- Selection UI vanished (Success)
+                    local p = sFolder:FindFirstChild(partName)
+                    if not p then return true end -- Part vanished (Success)
+
+                    interactWithPart(p)
+                    attempts = attempts + 1
+                    
+                    if attempts < 4 then
+                        task.wait(1) -- Wait 1s between retries
+                    end
+                end
+                
+                -- Exceeded 4 attempts, flag as failed
+                failedParts[partName] = true
+                return false 
+            end
+
+            while Settings.AutoFarmBeta and iteration < maxIterations do
+                iteration = iteration + 1
+                selectFolder = workspace:FindFirstChild("Select")
+                if not selectFolder then break end
+
+                local rerollPart = selectFolder:FindFirstChild("Reroll")
+                local part3 = selectFolder:FindFirstChild("3")
+
+                local targetPartName = nil
+                local anyWhitelistActive = hasAnyActiveWhitelist()
+
+                -- 1. Check Medal Curse overrides first
+                for _, name in ipairs({"1", "2"}) do
+                    if not failedParts[name] then
+                        local part = selectFolder:FindFirstChild(name)
+                        if part then
+                            local choiceName = tostring(part:GetAttribute("ChoiceName") or "")
+                            if choiceName:lower():find("medalcurse") or choiceName:lower():find("medalcurses") then
+                                targetPartName = name
+                                break
                             end
                         end
                     end
                 end
 
-                local candidates = {"1", "2"}
-                for _, name in ipairs(candidates) do
-                    local part = selectFolder:FindFirstChild(name)
-                    if part and not processedParts[part] then
-                        if checkPartMatch(part) then
-                            processedParts[part] = true
-                            interactWithPart(part)
-                            task.wait(1.5)
-                            return true
-                        end
-                    end
-                end
-                return false
-            end
-
-            while evaluateAndProcessParts() do
-                task.wait(0.1)
-            end
-
-            local part3 = selectFolder:FindFirstChild("3")
-            if part3 then
-                local char = plr.Character
-                local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
-                if root then
-                    root.CFrame = part3.CFrame + Vector3.new(0, 3, 0)
-                end
-
-                local startTime = os.clock()
-                while (os.clock() - startTime) < 2 do
-                    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
-                    task.wait(0.05)
-                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
-
-                    local closestPrompt = nil
-                    for _, prompt in ipairs(part3:GetChildren()) do
-                        if prompt:IsA("ProximityPrompt") then
-                            closestPrompt = prompt
-                            break
-                        end
-                    end
-
-                    if closestPrompt then
-                        pcall(function()
-                            if fireproximityprompt then
-                                fireproximityprompt(closestPrompt)
+                -- 2. Try to buy whitelisted elements (Prioritizing [1] then [2])
+                if not targetPartName then
+                    for _, name in ipairs({"1", "2"}) do
+                        if not failedParts[name] then
+                            local part = selectFolder:FindFirstChild(name)
+                            if part and checkPartMatch(part) then
+                                targetPartName = name
+                                break
                             end
-                        end)
+                        end
                     end
-
-                    task.wait(0.4)
                 end
 
-                interactWithPart(part3)
-                task.wait(1.5)
+                -- 3. If NO whitelist options selected globally, randomly pick valid part (1 or 2)
+                if not targetPartName and not anyWhitelistActive then
+                    local validParts = {}
+                    for _, name in ipairs({"1", "2"}) do
+                        if not failedParts[name] and selectFolder:FindFirstChild(name) then
+                            table.insert(validParts, name)
+                        end
+                    end
+                    if #validParts > 0 then
+                        targetPartName = validParts[math.random(1, #validParts)]
+                    end
+                end
+
+                -- If a valid part is found, attempt to buy it with 4 attempts limitation
+                if targetPartName then
+                    local success = attemptBuy(targetPartName)
+                    if success then
+                        continue -- Re-evaluate paths since successful
+                    end
+                    -- If it failed, it logged to `failedParts` table, will loop back and naturally fallback to `[2]` or random/reroll/3.
+                else
+                    -- 4. If whitelists active but none match (or they both failed), resort to Reroll
+                    if rerollPart and rerollCount < maxRerolls and anyWhitelistActive then
+                        rerollCount = rerollCount + 1
+                        local char = plr.Character
+                        local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
+                        if root then
+                            root.CFrame = rerollPart.CFrame + Vector3.new(0, 3, 0)
+                        end
+                        task.wait(0.2)
+
+                        -- Firing the F key after teleporting
+                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+                        task.wait(0.05)
+                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+
+                        local closestPrompt = rerollPart:FindFirstChildWhichIsA("ProximityPrompt", true)
+                        if closestPrompt then
+                            pcall(function()
+                                if fireproximityprompt then fireproximityprompt(closestPrompt) end
+                            end)
+                        end
+
+                        interactWithPart(rerollPart)
+                        task.wait(1.5)
+                        failedParts = {} -- Clear failures memory once a new selection board is loaded via Reroll
+                        continue 
+                    end
+
+                    -- 5. Fallback to [3] (start game) if nothing else is left to buy/reroll
+                    if part3 then
+                        attemptBuy("3") -- We apply standard fallback interaction wrapper to [3] as well
+                    end
+                    
+                    break -- Exit the loop after interacting with part 3
+                end
             end
 
             beaconFiredTime = os.clock()
@@ -1020,7 +1082,6 @@ end
 
 collectGiftsEngine = function(isGoldenTarget)
     if tweening then
-        if notifOn then notif("Already collecting gifts.", "Collection System") end
         return
     end
     tweening = true
@@ -1262,7 +1323,7 @@ table.insert(scriptConnections, connections["MainHeartbeat"])
 --------------------------------------------------------------------
 Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/ThemeManager.lua"))()
-local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua"))()
+SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua"))()
 
 local Loading = Library:CreateLoading({
     Title = "Null GUI - Java.", Icon = "7476151111", TotalSteps = 4
@@ -1329,13 +1390,11 @@ if isSupportedPlace then
                     end)
                     table.insert(scriptConnections, connections["AutoStartCollectingConn"])
                 end
-                Library:Notify("Auto Start Collecting Enabled.", 2)
             else
                 if connections["AutoStartCollectingConn"] then
                     connections["AutoStartCollectingConn"]:Disconnect()
                     connections["AutoStartCollectingConn"] = nil
                 end
-                Library:Notify("Auto Start Collecting Disabled.", 2)
             end
         end
     })
@@ -1422,20 +1481,26 @@ if isSupportedPlace then
     FarmGroup:AddToggle("AutoFarmBetaToggle", {
         Text = "auto farm (beta)",
         Default = Settings.AutoFarmBeta,
-        Tooltip = "Auto enables start collecting and beacon TP.",
+        Tooltip = "Auto enables start collecting, beacon TP, and enemy deletion.",
         Callback = function(Value)
             Settings.AutoFarmBeta = Value
             local autoStartTgl = getToggle("AutoStartCollectingToggle")
             local autoBeaconTgl = getToggle("AutoBeaconToggle")
+            local collectNormalTgl = getToggle("CollectNormalToggle")
+            local deleteAllEnemiesTgl = getToggle("DeleteAllEnemies")
 
             if Value then
                 if autoStartTgl then autoStartTgl:SetValue(true) else Settings.AutoStartCollecting = true end
                 if autoBeaconTgl then autoBeaconTgl:SetValue(true) else Settings.AutoBeacon = true end
+                if collectNormalTgl then collectNormalTgl:SetValue(true) else Settings.CollectNormal = true end
+                if deleteAllEnemiesTgl then deleteAllEnemiesTgl:SetValue(true) else deleteAllEnemies = true end
 
                 Library:Notify("Auto Farm (Beta) Enabled.", 2)
             else
                 if autoStartTgl then autoStartTgl:SetValue(false) else Settings.AutoStartCollecting = false end
                 if autoBeaconTgl then autoBeaconTgl:SetValue(false) else Settings.AutoBeacon = false end
+                if collectNormalTgl then collectNormalTgl:SetValue(false) else Settings.CollectNormal = false end
+                if deleteAllEnemiesTgl then deleteAllEnemiesTgl:SetValue(false) else deleteAllEnemies = false end
 
                 Library:Notify("Auto Farm (Beta) Disabled.", 2)
             end
@@ -1586,7 +1651,7 @@ if isSupportedPlace then
     })
 
     EnemyControlGroup:AddToggle("DeleteAllEnemies", {
-        Text = "Delete All Enemies", Default = false,
+        Text = "Delete All Enemies", Default = Settings.DeleteAllEnemies,
         Callback = function(Value)
             deleteAllEnemies = Value
             if Value then
@@ -1866,7 +1931,7 @@ else
     local selectedPlayer = nil
     TeleportGroup:AddDropdown("TargetPlayerDropdown", { Text = "Select Player to TP", Values = getPlayerNames(), Default = 1, Callback = function(Value) selectedPlayer = Value end })
     TeleportGroup:AddButton({ Text = "Refresh Player List", Func = function() if Options and Options.TargetPlayerDropdown then Options.TargetPlayerDropdown:SetValues(getPlayerNames()) end end })
-    TeleportGroup:AddButton({ Text = "Teleport to Player", Func = function() if selectedPlayer then local targetPlr = Players:FindFirstChild(selectedPlayer) if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame; Library:Notify("Teleported to " .. selectedPlayer, 3) end end end })
+    TeleportGroup:AddButton({ Text = "Teleport to Player", Func = function() if selectedPlayer then local targetPlr = Players:FindFirstChild(selectedPlayer) if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame; Library:Notify("Teleported to " + selectedPlayer, 3) end end end })
     TeleportGroup:AddButton({ Text = "Rejoin Server", Func = function() TeleportService:TeleportToPlaceInstance(PlaceId, JobId, plr) end })
     TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/0?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, s in ipairs(servers.data) do if s.id ~= JobId and s.playing < s.maxPlayers then TeleportService:TeleportToPlaceInstance(PlaceId, s.id, plr); break end end end end })
 end
