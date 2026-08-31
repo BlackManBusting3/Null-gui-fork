@@ -60,6 +60,47 @@ if not fSignal and getgenv then
 end
 
 --------------------------------------------------------------------
+-- Immunity Hook Integration State & Execution
+--------------------------------------------------------------------
+local guardianImmunity = false
+local voidboundGuardianImmunity = false
+
+task.spawn(function()
+    if not game:IsLoaded() then
+        game.Loaded:Wait()
+    end
+
+    local eventsFolder = ReplicatedStorage:WaitForChild("Events", 5)
+    local diedEvent = eventsFolder and eventsFolder:WaitForChild("Died", 5)
+
+    if diedEvent and getrawmetatable and setreadonly then
+        local wrapFn = (typeof(newcclosure) == "function" and newcclosure) or function(f) return f end
+        local mt = getrawmetatable(game)
+        local oldNamecall = mt.__namecall
+
+        setreadonly(mt, false)
+
+        mt.__namecall = wrapFn(function(self, ...)
+            if self == diedEvent and getnamecallmethod() == "FireServer" then
+                local cause = select(1, ...)
+
+                if guardianImmunity and cause == "Guardian" then
+                    return
+                end
+
+                if voidboundGuardianImmunity and cause == "ShadowGuardian" then
+                    return
+                end
+            end
+
+            return oldNamecall(self, ...)
+        end)
+
+        setreadonly(mt, true)
+    end
+end)
+
+--------------------------------------------------------------------
 -- Whitelists Data Arrays
 --------------------------------------------------------------------
 local UpgradesList = {
@@ -141,19 +182,19 @@ vpBox.Adornee = velocityPart
 vpBox.Parent = velocityPart
 
 --------------------------------------------------------------------
--- Integrated Settings & State Flags (FIXED DEFAULTS)
+-- Integrated Settings & State Flags
 --------------------------------------------------------------------
 local Settings = {
-    CollectNormal = false,         -- Disabled by default
+    CollectNormal = false,
     CollectGolden = false,
     LegitCollection = false,
     LegitSpeed = 16,
     InstantTeleport = true, 
     TweenSpeed = 60,        
     DelayBetweenGifts = 0.05,
-    AutoBeacon = false,            -- Disabled by default
-    AutoStartCollecting = false,   -- Disabled by default
-    AutoFarmBeta = false,          -- Disabled by default
+    AutoBeacon = false,
+    AutoStartCollecting = false,
+    AutoFarmBeta = false,
     AutoPylon = false,
     TargetLevel = nil,
     EnemiesWhitelist = {},
@@ -174,19 +215,15 @@ local notifOn = true
 local destroying = false
 
 local disableAllEnemies = false
-local deleteAllEnemies = false     -- Disabled by default
+local deleteAllEnemies = false
 local disableClientEnemies = false
 local autoDestroySpawns = false
 
--- Razorbloom destroy state
 local nrb = false
-
--- Tile connections state
 local antiFleshTilesEnabled = false
 local persistentTileConnections = false
 local persistentRespawnConnection = nil
 
--- Ported Disable Features state flags
 local disableSeaMines = false
 local disableVoidImplosions = false
 local disableFakeBeacons = false
@@ -214,7 +251,7 @@ local auto_destroy = {
 }
 
 local pt = false
-local pb = false                   -- Guardian Protection disabled by default
+local pb = false
 local velov = false
 local connections = {}
 local activeUpgrades = {}
@@ -228,6 +265,7 @@ local lp = 500
 
 local loggedAttributes = {}
 local logToggleActive = false
+local selectionState = { failedParts = {}, rerollCount = 0 }
 
 local updateActiveUpgradesDisplay = function() end
 local applyUpgradeValue = function() end
@@ -413,7 +451,6 @@ task.spawn(function()
             if currentObservedLevel and currentObservedLevel >= Settings.TargetLevel then
                 targetVoidProcessing = true
 
-                -- Clear target level immediately so it triggers strictly ONCE when reaching the set target
                 Settings.TargetLevel = nil
                 local autoVoidInput = Options and Options.TargetLevelVoidInput
                 if autoVoidInput then
@@ -460,7 +497,7 @@ task.spawn(function()
 end)
 
 --------------------------------------------------------------------
--- Global Player Event Connections (Auto Farm Dependencies)
+-- Global Player Event Connections
 --------------------------------------------------------------------
 local respawnCounter = 0
 local beaconFiredTime = 0
@@ -514,7 +551,6 @@ local function setupCharacter(char)
         table.insert(scriptConnections, conn)
     end
     
-    -- Check for Razorbloom on character spawn
     if nrb then
         task.wait(0.5)
         destroyRazorbloom()
@@ -528,13 +564,15 @@ if plr.Character then
 end
 
 --------------------------------------------------------------------
--- Auto Farm Engine (UPDATED ADVANCED FAIL-DETECTION & REROLL)
+-- Auto Farm Engine
 --------------------------------------------------------------------
 local function isValueWhitelisted(value, whitelistTable)
     if not value or not whitelistTable then return false end
     local searchVal = tostring(value):lower()
     for itemKey, isSelected in pairs(whitelistTable) do
-        if isSelected and tostring(itemKey):lower() == searchVal then
+        local keyStr = type(itemKey) == "number" and tostring(isSelected) or tostring(itemKey)
+        local enabled = type(itemKey) == "number" and true or isSelected
+        if enabled and keyStr:lower() == searchVal then
             return true
         end
     end
@@ -622,40 +660,53 @@ local function checkAndVoteSelectParts()
     if not Settings.AutoFarmBeta or isAutoFarmProcessing then return end
 
     local selectFolder = workspace:FindFirstChild("Select")
-    if not selectFolder then return end
-
-    if not (selectFolder:FindFirstChild("1") or selectFolder:FindFirstChild("2") or selectFolder:FindFirstChild("3")) then return end
+    if not selectFolder or not (selectFolder:FindFirstChild("1") or selectFolder:FindFirstChild("2") or selectFolder:FindFirstChild("3")) then 
+        table.clear(selectionState.failedParts)
+        selectionState.rerollCount = 0
+        return 
+    end
 
     isAutoFarmProcessing = true
     task.spawn(function()
         pcall(function()
             local maxRerolls = 5
-            local rerollCount = 0
             local maxIterations = 25
             local iteration = 0
-            
-            -- Table to track which selections failed consecutively 4 times
-            local failedParts = {}
 
-            -- Helper to attempt to purchase a specific part precisely 4 times (1s interval)
+            local function getBoardState()
+                local s = workspace:FindFirstChild("Select")
+                if not s then return "" end
+                local p1 = s:FindFirstChild("1")
+                local p2 = s:FindFirstChild("2")
+                return (p1 and tostring(p1:GetAttribute("ChoiceName")) or "") .. "|" .. (p2 and tostring(p2:GetAttribute("ChoiceName")) or "")
+            end
+
             local function attemptBuy(partName)
                 local attempts = 0
+                local initialState = getBoardState()
+                
                 while attempts < 4 and Settings.AutoFarmBeta do
                     local sFolder = workspace:FindFirstChild("Select")
-                    if not sFolder then return true end -- Selection UI vanished (Success)
+                    if not sFolder then return true end
                     local p = sFolder:FindFirstChild(partName)
-                    if not p then return true end -- Part vanished (Success)
+                    if not p then return true end 
 
                     interactWithPart(p)
                     attempts = attempts + 1
                     
                     if attempts < 4 then
-                        task.wait(1) -- Wait 1s between retries
+                        task.wait(1.5) 
+                    end
+                    
+                    local newState = getBoardState()
+                    if partName == "Reroll" then
+                        if newState ~= initialState then return true end 
+                    else
+                        if not sFolder:FindFirstChild(partName) or newState ~= initialState then return true end
                     end
                 end
                 
-                -- Exceeded 4 attempts, flag as failed
-                failedParts[partName] = true
+                selectionState.failedParts[partName] = true
                 return false 
             end
 
@@ -670,22 +721,26 @@ local function checkAndVoteSelectParts()
                 local targetPartName = nil
                 local anyWhitelistActive = hasAnyActiveWhitelist()
                 local isCurseOrEnemySelection = false
+                local activeSpecificWhitelist = false
 
-                -- Check if current selection contains curses or enemies
                 for _, name in ipairs({"1", "2"}) do
                     local part = selectFolder:FindFirstChild(name)
                     if part then
                         local choiceType = tostring(part:GetAttribute("ChoiceType") or "")
-                        if choiceType:upper():find("CURSE") or choiceType:upper():find("ENEM") then
+                        if choiceType:upper():find("CURSE") then
                             isCurseOrEnemySelection = true
+                            activeSpecificWhitelist = (Settings.CursesWhitelist and next(Settings.CursesWhitelist) ~= nil)
+                            break
+                        elseif choiceType:upper():find("ENEM") then
+                            isCurseOrEnemySelection = true
+                            activeSpecificWhitelist = (Settings.EnemiesWhitelist and next(Settings.EnemiesWhitelist) ~= nil)
                             break
                         end
                     end
                 end
 
-                -- 1. Check Medal Curse overrides first
                 for _, name in ipairs({"1", "2"}) do
-                    if not failedParts[name] then
+                    if not selectionState.failedParts[name] then
                         local part = selectFolder:FindFirstChild(name)
                         if part then
                             local choiceName = tostring(part:GetAttribute("ChoiceName") or "")
@@ -697,10 +752,9 @@ local function checkAndVoteSelectParts()
                     end
                 end
 
-                -- 2. Try to buy whitelisted elements (Prioritizing [1] then [2])
                 if not targetPartName then
                     for _, name in ipairs({"1", "2"}) do
-                        if not failedParts[name] then
+                        if not selectionState.failedParts[name] then
                             local part = selectFolder:FindFirstChild(name)
                             if part and checkPartMatch(part) then
                                 targetPartName = name
@@ -710,11 +764,10 @@ local function checkAndVoteSelectParts()
                     end
                 end
 
-                -- 3. If NO whitelist options selected globally, randomly pick valid part (1 or 2)
                 if not targetPartName and not anyWhitelistActive then
                     local validParts = {}
                     for _, name in ipairs({"1", "2"}) do
-                        if not failedParts[name] and selectFolder:FindFirstChild(name) then
+                        if not selectionState.failedParts[name] and selectFolder:FindFirstChild(name) then
                             table.insert(validParts, name)
                         end
                     end
@@ -723,67 +776,59 @@ local function checkAndVoteSelectParts()
                     end
                 end
 
-                -- If a valid part is found, attempt to buy it with 4 attempts limitation
                 if targetPartName then
                     local success = attemptBuy(targetPartName)
-                    if success then
-                        continue -- Re-evaluate paths since successful
-                    end
-                    -- If it failed, it logged to `failedParts` table, will loop back and naturally fallback to `[2]` or random/reroll/3.
+                    if success then continue end
                 else
-                    -- 4. If whitelists active but none match (or they both failed), resort to Reroll
-                    -- BUT ONLY if it's NOT a curse or enemy selection
-                    if rerollPart and rerollCount < maxRerolls and anyWhitelistActive and not isCurseOrEnemySelection then
-                        rerollCount = rerollCount + 1
-                        local char = plr.Character
-                        local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
-                        if root then
-                            root.CFrame = rerollPart.CFrame + Vector3.new(0, 3, 0)
-                        end
-                        task.wait(0.2)
-
-                        -- Firing the F key after teleporting
-                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
-                        task.wait(0.05)
-                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
-
-                        local closestPrompt = rerollPart:FindFirstChildWhichIsA("ProximityPrompt", true)
-                        if closestPrompt then
-                            pcall(function()
-                                if fireproximityprompt then fireproximityprompt(closestPrompt) end
-                            end)
-                        end
-
-                        interactWithPart(rerollPart)
-                        task.wait(1.5)
-                        failedParts = {} -- Clear failures memory once a new selection board is loaded via Reroll
-                        continue 
-                    end
-
-                    -- 5. Fallback to [3] (start game) if nothing else is left to buy/reroll
-                    -- OR if it's a curse/enemy selection (don't reroll, just pick randomly)
-                    if isCurseOrEnemySelection and not targetPartName then
-                        -- For curse/enemy selections without whitelist match, pick randomly
-                        local validParts = {}
-                        for _, name in ipairs({"1", "2"}) do
-                            if not failedParts[name] and selectFolder:FindFirstChild(name) then
-                                table.insert(validParts, name)
-                            end
-                        end
-                        if #validParts > 0 then
-                            targetPartName = validParts[math.random(1, #validParts)]
-                            local success = attemptBuy(targetPartName)
+                    if rerollPart and selectionState.rerollCount < maxRerolls and anyWhitelistActive and not selectionState.failedParts["Reroll"] then
+                        if not isCurseOrEnemySelection then
+                            local success = attemptBuy("Reroll")
                             if success then
-                                continue
+                                selectionState.rerollCount = selectionState.rerollCount + 1
+                                selectionState.failedParts["1"] = nil
+                                selectionState.failedParts["2"] = nil
+                                continue 
+                            end
+                        end
+                    end
+
+                    if isCurseOrEnemySelection then
+                        if part3 and not selectionState.failedParts["3"] then
+                            targetPartName = "3"
+                            local success = attemptBuy("3")
+                            if success then continue end
+                        elseif not activeSpecificWhitelist then
+                            local validParts = {}
+                            for _, name in ipairs({"1", "2"}) do
+                                if not selectionState.failedParts[name] and selectFolder:FindFirstChild(name) then
+                                    table.insert(validParts, name)
+                                end
+                            end
+                            if #validParts > 0 then
+                                targetPartName = validParts[math.random(1, #validParts)]
+                                local success = attemptBuy(targetPartName)
+                                if success then continue end
+                            end
+                        else
+                            local validParts = {}
+                            for _, name in ipairs({"1", "2"}) do
+                                if not selectionState.failedParts[name] and selectFolder:FindFirstChild(name) then
+                                    table.insert(validParts, name)
+                                end
+                            end
+                            if #validParts > 0 then
+                                targetPartName = validParts[math.random(1, #validParts)]
+                                local success = attemptBuy(targetPartName)
+                                if success then continue end
                             end
                         end
                     end
                     
-                    if part3 then
-                        attemptBuy("3") -- We apply standard fallback interaction wrapper to [3] as well
+                    if part3 and not selectionState.failedParts["3"] then
+                        attemptBuy("3")
                     end
                     
-                    break -- Exit the loop after interacting with part 3
+                    break 
                 end
             end
 
@@ -1100,22 +1145,23 @@ local function moveToGift(targetGift)
 end
 
 local function handleSpawnNavigation()
-    local targetSpawn = workspace:FindFirstChild("Spawn") or workspace:FindFirstChild("SpawnLocation") or workspace:FindFirstChild("Beacons")
-    if targetSpawn then
-        local part = targetSpawn:IsA("BasePart") and targetSpawn or targetSpawn:FindFirstChildWhichIsA("BasePart")
-        if part and part.Position ~= Vector3.new(0,0,0) then
+    local spawnNames = {"Spawn", "SpawnLocation"}
+    for _, sName in ipairs(spawnNames) do
+        local targetSpawn = workspace:FindFirstChild(sName)
+        if targetSpawn and targetSpawn:IsA("BasePart") and targetSpawn.Position ~= Vector3.new(0,0,0) then
             local char = getChar(plr)
             local root = getRoot(char)
             if root then
-                if Settings.LegitCollection then
-                    walkToPositionPathfinding(part.Position)
-                else
-                    root.CFrame = part.CFrame + Vector3.new(0, 15, 0)
+                if Settings.LegitCollection then 
+                    walkToPositionPathfinding(targetSpawn.Position)
+                else 
+                    root.CFrame = targetSpawn.CFrame + Vector3.new(0, 5, 0) 
                 end
                 return true
             end
         end
     end
+    
     return false
 end
 
@@ -1166,7 +1212,7 @@ collectGiftsEngine = function(isGoldenTarget)
             if not gift then
                 failedAttempts += 1
                 if not isGoldenTarget then
-                    if failedAttempts >= 2 or #availableNormalGifts == 0 then
+                    if failedAttempts >= 3 or #availableNormalGifts == 0 then
                         if notifOn then notif("No normal gifts left. Switching to Golden Gifts.", "Collection System") end
                         Settings.CollectNormal = false
                         
@@ -1182,10 +1228,12 @@ collectGiftsEngine = function(isGoldenTarget)
                         return
                     end
                 else
-                    if notifOn then notif("No Golden Gifts remaining. Disabling gift collection.", "Collection System") end
-                    if Settings.AutoBeacon then handleSpawnNavigation() end
-                    stopAllCollection()
-                    break
+                    if failedAttempts >= 3 or #availableGoldenGifts == 0 then
+                        if notifOn then notif("No Golden Gifts remaining. Disabling gift collection.", "Collection System") end
+                        if Settings.AutoBeacon then handleSpawnNavigation() end
+                        stopAllCollection()
+                        break
+                    end
                 end
                 task.wait(0.5) 
                 table.clear(blacklistedGifts) 
@@ -1380,11 +1428,11 @@ end)
 table.insert(scriptConnections, connections["MainHeartbeat"])
 
 --------------------------------------------------------------------
--- Load Obsidian UI Library Fast
+-- Load Obsidian UI Library & Addons
 --------------------------------------------------------------------
 Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/ThemeManager.lua"))()
-SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua"))()
 
 local Loading = Library:CreateLoading({
     Title = "Null GUI - Java.", Icon = "7476151111", TotalSteps = 4
@@ -1419,6 +1467,7 @@ if isSupportedPlace then
     Tabs.Map        = Window:AddTab("Map", "map")
     Tabs.Upgrades   = Window:AddTab("Upgrades", "shield-plus")
     Tabs.Debug      = Window:AddTab("Debug", "bug")
+    Tabs.Credits    = Window:AddTab("Credits", "info")
     Tabs.Settings   = Window:AddTab("Settings", "settings")
 
     --------------------------------------------------------------------
@@ -1822,7 +1871,27 @@ if isSupportedPlace then
     addDetailedEnemy(DetailedEnemyGroup, "Baby")
     addDetailedEnemy(DetailedEnemyGroup, "Flesh")
 
-    DetailedEnemyGroup:AddDivider("Guardian (CANNOT BE DISABLED)")
+    DetailedEnemyGroup:AddDivider("Guardian Options")
+    DetailedEnemyGroup:AddToggle("Guardian_Immunity", {
+        Text = "Guardian Death Immunity",
+        Default = false,
+        Tooltip = "Blocks server death registration when killed by Guardian.",
+        Callback = function(Value)
+            guardianImmunity = Value
+            Library:Notify("Guardian Immunity " .. (Value and "Enabled" or "Disabled"), 2)
+        end
+    })
+
+    DetailedEnemyGroup:AddToggle("Shadow_Guardian_Immunity", {
+        Text = "Shadow Guardian Death Immunity",
+        Default = false,
+        Tooltip = "Blocks server death registration when killed by Shadow Guardian.",
+        Callback = function(Value)
+            voidboundGuardianImmunity = Value
+            Library:Notify("Shadow Guardian Immunity " .. (Value and "Enabled" or "Disabled"), 2)
+        end
+    })
+
     DetailedEnemyGroup:AddToggle("Guardian_Protection", {
         Text = "Create Bullet Protection Sphere", Default = pb,
         Callback = function(Value)
@@ -1991,6 +2060,7 @@ if isSupportedPlace then
 else
     Tabs.UniversalMain = Window:AddTab("Main - Universal", "globe")
     Tabs.Debug         = Window:AddTab("Debug", "bug")
+    Tabs.Credits       = Window:AddTab("Credits", "info")
     Tabs.Settings      = Window:AddTab("Settings", "settings")
 
     local UniversalGroup = Tabs.UniversalMain:AddLeftGroupbox("Universal Features")
@@ -2007,131 +2077,79 @@ else
     local selectedPlayer = nil
     TeleportGroup:AddDropdown("TargetPlayerDropdown", { Text = "Select Player to TP", Values = getPlayerNames(), Default = 1, Callback = function(Value) selectedPlayer = Value end })
     TeleportGroup:AddButton({ Text = "Refresh Player List", Func = function() if Options and Options.TargetPlayerDropdown then Options.TargetPlayerDropdown:SetValues(getPlayerNames()) end end })
-    TeleportGroup:AddButton({ Text = "Teleport to Player", Func = function() if selectedPlayer then local targetPlr = Players:FindFirstChild(selectedPlayer) if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame; Library:Notify("Teleported to " + selectedPlayer, 3) end end end })
+    TeleportGroup:AddButton({ Text = "Teleport to Player", Func = function() if selectedPlayer then local targetPlr = Players:FindFirstChild(selectedPlayer) if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame; Library:Notify("Teleported to " .. selectedPlayer, 3) end end end })
     TeleportGroup:AddButton({ Text = "Rejoin Server", Func = function() TeleportService:TeleportToPlaceInstance(PlaceId, JobId, plr) end })
-    TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/0?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, s in ipairs(servers.data) do if s.id ~= JobId and s.playing < s.maxPlayers then TeleportService:TeleportToPlaceInstance(PlaceId, s.id, plr); break end end end end })
+    TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, server in ipairs(servers.data) do if server.playing < server.maxPlayers and server.id ~= JobId then TeleportService:TeleportToPlaceInstance(PlaceId, server.id, plr); return end end end Library:Notify("Failed to find a server.", 3) end })
 end
 
 --------------------------------------------------------------------
--- Debug Tab
+-- Credits Tab Groupboxes
 --------------------------------------------------------------------
-local DebugGroup = Tabs.Debug:AddLeftGroupbox("Server Info")
-local playerLabel = DebugGroup:AddLabel("Players: Fetching...")
-local pingLabel = DebugGroup:AddLabel("Ping: Fetching...")
-local clientFpsLabel = DebugGroup:AddLabel("Client FPS: Fetching...")
-local serverFpsLabel = DebugGroup:AddLabel("Server FPS: Fetching...")
-local locationLabel = DebugGroup:AddLabel("Server Region: Fetching...")
-local uptimeLabel = DebugGroup:AddLabel("Server Uptime: Fetching...")
+local ContributorsGroup = Tabs.Credits:AddLeftGroupbox("Contributors")
+ContributorsGroup:AddLabel("<font color='#FFA500'>kaoru_zz</font>; Guardians anti-kill")
+ContributorsGroup:AddLabel("<font color='#FFA500'>(Ali)zeja</font> Main script, Huge inspiration!")
 
-local clientFPS = 0
-local frameCount = 0
-local lastFpsUpdate = os.clock()
-local fpsConn = RunService.RenderStepped:Connect(function()
-    frameCount += 1
-    local now = os.clock()
-    if now - lastFpsUpdate >= 1 then clientFPS = frameCount / (now - lastFpsUpdate); frameCount = 0; lastFpsUpdate = now end
-end)
-table.insert(scriptConnections, fpsConn)
+local DevelopersGroup = Tabs.Credits:AddRightGroupbox("Developers")
+DevelopersGroup:AddLabel("<font color='#AA55FF'>Java (.html4)</font> Main Developer")
 
-local serverLocation = "Estimating..."
-task.spawn(function()
-    local playersList = Players:GetPlayers()
-    if #playersList > 0 then
-        local success, regionCode = pcall(function() return LocalizationService:GetCountryRegionForPlayerAsync(playersList[1]) end)
-        if success and regionCode then serverLocation = regionCode .. " (Est.)" else serverLocation = "Hidden by Roblox" end
-    else
-        serverLocation = "Unknown"
-    end
-end)
-
-local function formatUptime(seconds)
-    local totalSeconds = math.floor(seconds)
-    local hours = math.floor(totalSeconds / 3600)
-    local minutes = math.floor((totalSeconds % 3600) / 60)
-    local secs = totalSeconds % 60
-    if hours > 0 then return string.format("%d:%02d:%02d", hours, minutes, secs) else return string.format("%d:%02d", minutes, secs) end
-end
-
-local function getDebugData()
-    local currentPlayers = Players:GetPlayers()
-    local ping = math.round(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
-    local serverFPS = math.round(workspace:GetRealPhysicsFPS())
-    local uptimeSeconds = workspace.DistributedGameTime
-    return { Players = string.format("%d/%d", #currentPlayers, Players.MaxPlayers), Ping = string.format("%d ms", ping), ClientFPS = math.round(clientFPS), ServerFPS = serverFPS, Location = serverLocation, Uptime = formatUptime(uptimeSeconds), PlayerList = currentPlayers }
-end
-
-DebugGroup:AddButton({ Text = "Refresh Info", Func = function() local data = getDebugData(); playerLabel:SetText("Players: " .. data.Players); pingLabel:SetText("Ping: " .. data.Ping); clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS); serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS); locationLabel:SetText("Server Region: " .. data.Location); uptimeLabel:SetText("Server Uptime: " .. data.Uptime); Library:Notify("Server Stats Refreshed!", 3) end })
-
-task.spawn(function()
-    while task.wait(2) do local data = getDebugData(); playerLabel:SetText("Players: " .. data.Players); pingLabel:SetText("Ping: " .. data.Ping); clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS); serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS); locationLabel:SetText("Server Region: " .. data.Location); uptimeLabel:SetText("Server Uptime: " .. data.Uptime) end
-end)
-
-local DebugToolsGroup = Tabs.Debug:AddRightGroupbox("Developer Utilities")
-DebugToolsGroup:AddToggle("AutoLogAttributesToggle", { Text = "Log Select Attributes (Every 10s)", Default = false, Callback = function(Value) logToggleActive = Value; if Value then Library:Notify("Auto Select attribute logging started (10s interval).", 3); task.spawn(function() while logToggleActive do logSelectAttributes(); task.wait(10) end end) else Library:Notify("Auto Select attribute logging stopped.", 3) end end })
-DebugToolsGroup:AddButton({ Text = "Log Select Attributes (Once)", Func = function() logSelectAttributes(); Library:Notify("Logged Select attributes to file/console.", 3) end })
-DebugToolsGroup:AddButton({ Text = "Execute Remote Spy (Cobalt)", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/lesingee/cobalt/refs/heads/main/loader.lua"))() end); Library:Notify("Executed Cobalt Remote Spy.", 3) end })
-DebugToolsGroup:AddButton({ Text = "Execute Dex (Dex++)", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/Babyhamsta/RBLX_Scripts/main/Universal/BypassedDarkDexV3.lua"))() end); Library:Notify("Executed Dex++ Explorer.", 3) end })
-DebugToolsGroup:AddButton({ Text = "Execute Infinite Yield", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))() end); Library:Notify("Executed Infinite Yield.", 3) end })
-
-local memoryLabel = DebugToolsGroup:AddLabel("Memory Usage: Measuring...")
-local instancesLabel = DebugToolsGroup:AddLabel("Total Instances: Measuring...")
-task.spawn(function()
-    while task.wait(3) do
-        pcall(function()
-            local memMB = math.round(collectgarbage("count") / 1024)
-            memoryLabel:SetText("Memory (Lua): " .. tostring(memMB) .. " MB")
-            instancesLabel:SetText("Total Instances: " .. tostring(#game:GetDescendants()))
-        end)
-    end
-end)
-
-local consoleLoggingActive = false
-local consoleConnection = nil
-DebugToolsGroup:AddToggle("ConsoleLoggerToggle", { Text = "Log Remote / Error Output", Default = false, Callback = function(Value) consoleLoggingActive = Value; if Value then consoleConnection = LogService.MessageOut:Connect(function(msg, msgType) if consoleLoggingActive then print("[NULL_DEBUG_LOG]: " .. msg) end end); table.insert(scriptConnections, consoleConnection); Library:Notify("Console output logging enabled.", 3) else if consoleConnection then consoleConnection:Disconnect(); consoleConnection = nil end Library:Notify("Console output logging disabled.", 3) end end })
-
-local SystemGroup = Tabs.Debug:AddRightGroupbox("System")
-SystemGroup:AddButton({
-    Text = "Unload GUI",
+--------------------------------------------------------------------
+-- Debug Tab Population
+--------------------------------------------------------------------
+local DebugGroup = Tabs.Debug:AddLeftGroupbox("Debug Actions")
+DebugGroup:AddButton({
+    Text = "Log Select Attributes",
     Func = function()
-        logToggleActive = false; stopAllCollection()
-        _G.NullGui_Cleanup()
-        if consoleConnection then consoleConnection:Disconnect() end
-        if persistentRespawnConnection then persistentRespawnConnection:Disconnect() end
-
-        if protectionFolder then protectionFolder:Destroy() end
-        table.clear(activeTripmineProtections); table.clear(activeBulletProtections)
-        if velocityPart and velocityPart.Parent then velocityPart:Destroy() end
-
-        local upgradesFolder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
-        if upgradesFolder then
-            for name, _ in pairs(activeUpgrades) do
-                local intv = upgradesFolder:FindFirstChild(name)
-                if intv then intv:Destroy() end
-                if events and events:FindFirstChild("UpgradesChanged") then 
-                    pcall(function() 
-                        if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = 0 }) end 
-                        if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = 0 }) end 
-                    end) 
-                end
-            end
-        end
-        table.clear(activeUpgrades)
-        nrb = false  -- Reset Razorbloom state on unload
-        Library:Unload()
+        logSelectAttributes()
+        Library:Notify("Logged board attributes to console/file.", 3)
     end
 })
 
-local SettingsGroup = Tabs.Settings:AddLeftGroupbox("GUI Settings")
-SettingsGroup:AddToggle("ExampleToggle", { Text = "TBA", Default = false, Callback = function(Value) end })
-SettingsGroup:AddDropdown("ExampleDropdown", { Text = "Choose Mode", Values = {"Mode A", "Mode B", "Mode C"}, Default = 1, Callback = function(Value) end })
-SettingsGroup:AddKeyPicker("ExampleKeybind", { Default = "K", Text = "Toggle Menu Keybind", Callback = function(Value) end })
+DebugGroup:AddButton({
+    Text = "Unload GUI",
+    Func = function()
+        if _G.NullGui_Cleanup and type(_G.NullGui_Cleanup) == "function" then
+            pcall(_G.NullGui_Cleanup)
+        end
+        if velocityPart and velocityPart.Parent then
+            pcall(function() velocityPart:Destroy() end)
+        end
+        if protectionFolder and protectionFolder.Parent then
+            pcall(function() protectionFolder:Destroy() end)
+        end
+        if Library and type(Library.Unload) == "function" then
+            pcall(function() Library:Unload() end)
+        end
+    end
+})
 
+local DebugInfoGroup = Tabs.Debug:AddRightGroupbox("Session State")
+local levelLabel = DebugInfoGroup:AddLabel("Current Observed Level: N/A")
+local connLabel = DebugInfoGroup:AddLabel("Active Connections: " .. tostring(#scriptConnections))
+
+task.spawn(function()
+    while task.wait(1) do
+        if levelLabel then
+            levelLabel:SetText("Current Observed Level: " .. tostring(currentObservedLevel or "N/A"))
+        end
+        if connLabel then
+            connLabel:SetText("Active Connections: " .. tostring(#scriptConnections))
+        end
+    end
+end)
+
+--------------------------------------------------------------------
+-- Settings Tab Setup (ThemeManager & SaveManager Integration)
+--------------------------------------------------------------------
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
+
+ThemeManager:SetFolder("NullGui")
+SaveManager:SetFolder("NullGui")
+
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({"ExampleKeybind"})
-ThemeManager:SetFolder("NullGuiConfig")
-SaveManager:SetFolder("NullGuiConfig/" .. tostring(PlaceId))
+SaveManager:SetIgnoreIndexes({})
+
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings)
+
 SaveManager:LoadAutoloadConfig()
