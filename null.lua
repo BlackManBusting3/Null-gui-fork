@@ -1,6 +1,19 @@
---[[
-https://discord.gg/jt83Cj8zs4, Fork of Alizeja's null gui but on my own repo. and with my own additions (THIS IS THE BETA BUILD)
-]]
+--------------------------------------------------------------------
+-- Cleanup Pre-Existing Execution Instances
+--------------------------------------------------------------------
+if _G.NullGui_Cleanup and type(_G.NullGui_Cleanup) == "function" then
+    pcall(_G.NullGui_Cleanup)
+end
+
+local scriptConnections = {}
+_G.NullGui_Cleanup = function()
+    for _, conn in pairs(scriptConnections) do
+        if conn and conn.Connected then
+            conn:Disconnect()
+        end
+    end
+    table.clear(scriptConnections)
+end
 
 --------------------------------------------------------------------
 -- Services & Global Declarations
@@ -26,23 +39,66 @@ local SoundService = game:GetService("SoundService")
 local PlaceId, JobId = game.PlaceId, game.JobId 
 local plr = Players.LocalPlayer
 
--- Fetch Game Name via MarketplaceService
+-- Fetch Game Name via MarketplaceService Async (Non-Blocking)
 local gameName = "Unknown Game"
-pcall(function()
-    local productInfo = MarketplaceService:GetProductInfoAsync(PlaceId)
-    if productInfo and productInfo.Name then
-        gameName = productInfo.Name
-    end
+task.spawn(function()
+    pcall(function()
+        local productInfo = MarketplaceService:GetProductInfoAsync(PlaceId)
+        if productInfo and productInfo.Name then
+            gameName = productInfo.Name
+        end
+    end)
 end)
 
--- Place ID Check
-local isSupportedPlace = (PlaceId == 129279692364812 or PlaceId == 100588763114828)
+-- Place ID Check (Set to true by default to bypass game restriction)
+local isSupportedPlace = true
 
 -- Signal Fallbacks for Executors
 local fSignal = firesignal or fire_signal or fireSignal
 if not fSignal and getgenv then
     fSignal = getgenv().firesignal or getgenv().fire_signal or getgenv().fireSig
 end
+
+--------------------------------------------------------------------
+-- Immunity Hook Integration State & Execution
+--------------------------------------------------------------------
+local guardianImmunity = false
+local voidboundGuardianImmunity = false
+
+task.spawn(function()
+    if not game:IsLoaded() then
+        game.Loaded:Wait()
+    end
+
+    local eventsFolder = ReplicatedStorage:WaitForChild("Events", 5)
+    local diedEvent = eventsFolder and eventsFolder:WaitForChild("Died", 5)
+
+    if diedEvent and getrawmetatable and setreadonly then
+        local wrapFn = (typeof(newcclosure) == "function" and newcclosure) or function(f) return f end
+        local mt = getrawmetatable(game)
+        local oldNamecall = mt.__namecall
+
+        setreadonly(mt, false)
+
+        mt.__namecall = wrapFn(function(self, ...)
+            if self == diedEvent and getnamecallmethod() == "FireServer" then
+                local cause = select(1, ...)
+
+                if guardianImmunity and cause == "Guardian" then
+                    return
+                end
+
+                if voidboundGuardianImmunity and cause == "ShadowGuardian" then
+                    return
+                end
+            end
+
+            return oldNamecall(self, ...)
+        end)
+
+        setreadonly(mt, true)
+    end
+end)
 
 --------------------------------------------------------------------
 -- Whitelists Data Arrays
@@ -53,7 +109,8 @@ local UpgradesList = {
     "RadarAltars", "AdvancedGravityCoil", "IceSkates", "FannyPack", "PocketBell",
     "MoreAltars", "NinjaBelt", "LargerGrapplePoints", "SportShoes", "GiftMagnet",
     "SubspacialBarrier", "MatrixTetrahedron", "SharkTail", "PanicNecklace", "AltarOfVoid",
-    "MiniatureHourglass", "GiftIdol"
+    "MiniatureHourglass", "GiftIdol", "Adrenaline", "TheOrb", "RealWings", "GraceWings",
+    "RadarPlayer", "RadarInstruments", "HighlightTripmines"
 }
 
 local CursesList = {
@@ -61,7 +118,7 @@ local CursesList = {
     "OvertunedSpringer", "ScorchedEarth", "ProblemChild", "TweakedOdds", "Springloaded",
     "FasterLevelDestroy", "Telestabber", "SavoryRing", "Lap2", "ICBMBig",
     "TelefraggerPredict", "HighRoller", "FakeCount", "ScatteredGifts", "WeakJumpPads",
-    "BladeCarousel", "OneLessChoice", "FragileTiles", "Tantrum"
+    "BladeCarousel", "OneLessChoice", "FragileTiles", "Tantrum", "MedalCurses"
 }
 
 local EnemiesList = {
@@ -72,7 +129,7 @@ local EnemiesList = {
 --------------------------------------------------------------------
 -- Game References
 --------------------------------------------------------------------
-local events = ReplicatedStorage:WaitForChild("Events", 5) or ReplicatedStorage:FindFirstChild("Events")
+local events = ReplicatedStorage:FindFirstChild("Events") or ReplicatedStorage:WaitForChild("Events", 2)
 local Camera = workspace.CurrentCamera
 local enemies = workspace:FindFirstChild("Enemies")
 local selection = workspace:FindFirstChild("Select")
@@ -80,7 +137,6 @@ local collectGift = events and events:FindFirstChild("GiftCollected")
 local currentRooms = workspace:FindFirstChild("CurrentRooms")
 local pads = workspace:FindFirstChild("JumpPads")
 local code = ReplicatedStorage:FindFirstChild("CodeVal")
-local music = ReplicatedStorage:FindFirstChild("MusicVal")
 local curses = ReplicatedStorage:FindFirstChild("CurseFolder") and ReplicatedStorage.CurseFolder:FindFirstChild("Curses")
 local gcurses = ReplicatedStorage:FindFirstChild("GreaterCurseFolder") and ReplicatedStorage.GreaterCurseFolder:FindFirstChild("Curses")
 local enemiesFolder = ReplicatedStorage:FindFirstChild("EnemyFolder")
@@ -139,10 +195,15 @@ local Settings = {
     AutoBeacon = false,
     AutoStartCollecting = false,
     AutoFarmBeta = false,
+    AutoPylon = false,
+    TargetLevel = nil,
     EnemiesWhitelist = {},
     CursesWhitelist = {},
     UpgradesWhitelist = {}
 }
+
+local currentObservedLevel = nil
+local targetVoidProcessing = false
 
 local tweening = false
 local currentTween = nil
@@ -158,12 +219,11 @@ local deleteAllEnemies = false
 local disableClientEnemies = false
 local autoDestroySpawns = false
 
--- Tile connections state
+local nrb = false
 local antiFleshTilesEnabled = false
 local persistentTileConnections = false
 local persistentRespawnConnection = nil
 
--- Ported Disable Features state flags
 local disableSeaMines = false
 local disableVoidImplosions = false
 local disableFakeBeacons = false
@@ -205,13 +265,239 @@ local lp = 500
 
 local loggedAttributes = {}
 local logToggleActive = false
+local selectionState = { failedParts = {}, rerollCount = 0 }
 
 local updateActiveUpgradesDisplay = function() end
 local applyUpgradeValue = function() end
 local upgradeLabels = {}
+local collectGiftsEngine = function() end
 
 --------------------------------------------------------------------
--- Global Player Event Connections (Auto Farm Dependencies)
+-- Helper functions for accessing UI Toggles / Options safely
+--------------------------------------------------------------------
+local function getToggle(name)
+    return (Toggles and Toggles[name]) or (Options and Options[name])
+end
+
+local function getChar(player) return player and player.Character end
+local function getRoot(character) return character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character.PrimaryPart) end
+
+--------------------------------------------------------------------
+-- Razorbloom Destroy Function
+--------------------------------------------------------------------
+local function destroyRazorbloom()
+    if not nrb then return end
+    
+    local char = getChar(plr)
+    if not char then return end
+    
+    local rb = char:FindFirstChild("Razorbloom")
+    if rb then
+        rb:Destroy()
+        if notifOn then
+            notif("Destroyed Razorbloom from character.", "Razorbloom System")
+        end
+    end
+end
+
+--------------------------------------------------------------------
+-- Pylon Helper Functions
+--------------------------------------------------------------------
+local function findPylons()
+    local found = {}
+    local searchContainers = {
+        workspace:FindFirstChild("Pylons"),
+        workspace:FindFirstChild("PylonFolder"),
+        workspace:FindFirstChild("Item_Pools"),
+        workspace
+    }
+    for _, container in ipairs(searchContainers) do
+        if container then
+            for _, obj in ipairs(container:GetChildren()) do
+                if obj.Name:lower():find("pylon") then
+                    table.insert(found, obj)
+                end
+            end
+        end
+    end
+    return found
+end
+
+local function interactWithPylon(pylon)
+    if not pylon or not pylon.Parent then return end
+    local part = pylon:IsA("BasePart") and pylon or pylon:FindFirstChildWhichIsA("BasePart") or pylon.PrimaryPart
+    if not part then return end
+
+    local char = getChar(plr)
+    local root = getRoot(char)
+    if root then
+        root.CFrame = part.CFrame + Vector3.new(0, 3, 0)
+    end
+    task.wait(0.1)
+
+    local prompt = pylon:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt then
+        pcall(function()
+            if fireproximityprompt then
+                fireproximityprompt(prompt)
+            else
+                prompt:InputHoldBegin()
+                task.wait(prompt.HoldDuration)
+                prompt:InputHoldEnd()
+            end
+        end)
+    else
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+        task.wait(0.05)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+    end
+end
+
+local function teleportToNearestPylon()
+    local pylons = findPylons()
+    if #pylons == 0 then
+        if Library and Library.Notify then Library:Notify("No Pylons found in workspace.", 3) end
+        return false
+    end
+
+    local char = getChar(plr)
+    local root = getRoot(char)
+    if not root then return false end
+
+    local closest, shortestDist = nil, math.huge
+    for _, pylon in ipairs(pylons) do
+        local part = pylon:IsA("BasePart") and pylon or pylon:FindFirstChildWhichIsA("BasePart") or pylon.PrimaryPart
+        if part then
+            local dist = (part.Position - root.Position).Magnitude
+            if dist < shortestDist then
+                shortestDist = dist
+                closest = pylon
+            end
+        end
+    end
+
+    if closest then
+        interactWithPylon(closest)
+        if Library and Library.Notify then Library:Notify("Teleported to Pylon: " .. closest.Name, 3) end
+        return true
+    end
+    return false
+end
+
+local isProcessingPylons = false
+local function processAutoPylon()
+    if not Settings.AutoPylon or isProcessingPylons then return end
+    local pylons = findPylons()
+    if #pylons > 0 then
+        isProcessingPylons = true
+        task.spawn(function()
+            for _, pylon in ipairs(pylons) do
+                if not Settings.AutoPylon then break end
+                if pylon and pylon.Parent then
+                    interactWithPylon(pylon)
+                    task.wait(0.5)
+                end
+            end
+            isProcessingPylons = false
+        end)
+    end
+end
+
+connections["PylonAddedListener"] = workspace.ChildAdded:Connect(function(child)
+    if Settings.AutoPylon and child.Name:lower():find("pylon") then
+        task.wait(0.1)
+        interactWithPylon(child)
+    end
+end)
+table.insert(scriptConnections, connections["PylonAddedListener"])
+
+--------------------------------------------------------------------
+-- Console Log Listener & Level Tracking
+--------------------------------------------------------------------
+connections["LevelLogListener"] = LogService.MessageOut:Connect(function(msg, msgType)
+    local lvlStr = string.match(msg, "Level%s*(%d+)")
+    if lvlStr then
+        local lvl = tonumber(lvlStr)
+        if lvl then
+            currentObservedLevel = lvl
+        end
+    end
+end)
+table.insert(scriptConnections, connections["LevelLogListener"])
+
+local function executeVoidKill()
+    local killVoid = workspace:FindFirstChild("KillVoid")
+    local char = getChar(plr)
+    local root = getRoot(char)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+    if killVoid and root and hum and hum.Health > 0 then
+        local targetPosition = killVoid.Position + Vector3.new(0, 20, 0)
+        root.CFrame = CFrame.new(targetPosition)
+    end
+end
+
+--------------------------------------------------------------------
+-- Sound Listener for NewLevel Sound Void Trigger
+--------------------------------------------------------------------
+task.spawn(function()
+    local sfxFolder = SoundService:WaitForChild("SFXFolder", 3) or SoundService:FindFirstChild("SFXFolder")
+    local newLevelSound = sfxFolder and (sfxFolder:WaitForChild("NewLevel", 2) or sfxFolder:FindFirstChild("NewLevel"))
+
+    if newLevelSound and newLevelSound:IsA("Sound") then
+        connections["NewLevelVoidSoundConn"] = newLevelSound.Played:Connect(function()
+            if not Settings.TargetLevel or type(Settings.TargetLevel) ~= "number" or Settings.TargetLevel <= 0 or targetVoidProcessing then return end
+
+            if currentObservedLevel and currentObservedLevel >= Settings.TargetLevel then
+                targetVoidProcessing = true
+
+                Settings.TargetLevel = nil
+                local autoVoidInput = Options and Options.TargetLevelVoidInput
+                if autoVoidInput then
+                    autoVoidInput:SetValue("")
+                end
+
+                local wasCollectingNormal = Settings.CollectNormal
+                local wasCollectingGolden = Settings.CollectGolden
+
+                tweening = false
+                if currentTween then
+                    currentTween:Cancel()
+                    currentTween = nil
+                end
+
+                local respawnConnection
+                respawnConnection = plr.CharacterAdded:Connect(function(newChar)
+                    respawnConnection:Disconnect()
+                    task.wait(1.5)
+
+                    if Settings.AutoStartCollecting or wasCollectingNormal then
+                        Settings.CollectNormal = true
+                        local normalTgl = getToggle("CollectNormalToggle")
+                        if normalTgl then normalTgl:SetValue(true) end
+                        task.defer(function() collectGiftsEngine(false) end)
+                    elseif wasCollectingGolden then
+                        Settings.CollectGolden = true
+                        local goldenTgl = getToggle("CollectGoldenToggle")
+                        if goldenTgl then goldenTgl:SetValue(true) end
+                        task.defer(function() collectGiftsEngine(true) end)
+                    end
+                end)
+                table.insert(scriptConnections, respawnConnection)
+
+                task.spawn(function()
+                    executeVoidKill()
+                    task.wait(30)
+                    targetVoidProcessing = false
+                end)
+            end
+        end)
+        table.insert(scriptConnections, connections["NewLevelVoidSoundConn"])
+    end
+end)
+
+--------------------------------------------------------------------
+-- Global Player Event Connections
 --------------------------------------------------------------------
 local respawnCounter = 0
 local beaconFiredTime = 0
@@ -236,7 +522,7 @@ local function handleEndScreenReset()
                     local absPos = continueBtn.AbsolutePosition
                     local absSize = continueBtn.AbsoluteSize
                     local center = absPos + (absSize / 2)
-                    
+
                     VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
                     task.wait(0.05)
                     VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 1)
@@ -257,15 +543,22 @@ end
 
 local function setupCharacter(char)
     respawnCounter += 1
-    local hum = char:WaitForChild("Humanoid", 5)
+    local hum = char:WaitForChild("Humanoid", 3)
     if hum then
-        hum.Died:Connect(function()
+        local conn = hum.Died:Connect(function()
             handlePlayerDeath()
         end)
+        table.insert(scriptConnections, conn)
+    end
+    
+    if nrb then
+        task.wait(0.5)
+        destroyRazorbloom()
     end
 end
 
-plr.CharacterAdded:Connect(setupCharacter)
+local charConn = plr.CharacterAdded:Connect(setupCharacter)
+table.insert(scriptConnections, charConn)
 if plr.Character then
     setupCharacter(plr.Character)
 end
@@ -277,8 +570,22 @@ local function isValueWhitelisted(value, whitelistTable)
     if not value or not whitelistTable then return false end
     local searchVal = tostring(value):lower()
     for itemKey, isSelected in pairs(whitelistTable) do
-        if isSelected and tostring(itemKey):lower() == searchVal then
+        local keyStr = type(itemKey) == "number" and tostring(isSelected) or tostring(itemKey)
+        local enabled = type(itemKey) == "number" and true or isSelected
+        if enabled and keyStr:lower() == searchVal then
             return true
+        end
+    end
+    return false
+end
+
+local function hasAnyActiveWhitelist()
+    local tables = {Settings.EnemiesWhitelist, Settings.CursesWhitelist, Settings.UpgradesWhitelist}
+    for _, tbl in ipairs(tables) do
+        if tbl then
+            for _, isSelected in pairs(tbl) do
+                if isSelected then return true end
+            end
         end
     end
     return false
@@ -286,12 +593,12 @@ end
 
 local function interactWithPart(part)
     if not part or not part:IsA("BasePart") then return end
-    
+
     local char = plr.Character
     local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
     if root then
         root.CFrame = part.CFrame + Vector3.new(0, 3, 0)
-        task.wait(0.1)
+        task.wait(0.05)
     end
 
     VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
@@ -300,7 +607,8 @@ local function interactWithPart(part)
 
     local closestPrompt = nil
     local shortestDist = 10
-    for _, prompt in ipairs(workspace:GetDescendants()) do
+    local searchScope = part.Parent or workspace
+    for _, prompt in ipairs(searchScope:GetChildren()) do
         if prompt:IsA("ProximityPrompt") and prompt.Parent and prompt.Parent:IsA("BasePart") then
             local dist = (prompt.Parent.Position - part.Position).Magnitude
             if dist < shortestDist then
@@ -330,115 +638,209 @@ local function interactWithPart(part)
     end
 end
 
+local function checkPartMatch(part)
+    if not part then return false end
+    local choiceType = part:GetAttribute("ChoiceType")
+    local choiceName = part:GetAttribute("ChoiceName")
+
+    if choiceType and choiceName then
+        local upperType = tostring(choiceType):upper()
+        if upperType:find("ENEM") then
+            return isValueWhitelisted(choiceName, Settings.EnemiesWhitelist)
+        elseif upperType:find("UPGRADE") then
+            return isValueWhitelisted(choiceName, Settings.UpgradesWhitelist)
+        elseif upperType:find("CURSE") then
+            return isValueWhitelisted(choiceName, Settings.CursesWhitelist)
+        end
+    end
+    return false
+end
+
 local function checkAndVoteSelectParts()
     if not Settings.AutoFarmBeta or isAutoFarmProcessing then return end
 
     local selectFolder = workspace:FindFirstChild("Select")
-    if not selectFolder then return end
-
-    local targets = {"1", "2", "3"}
-    local matchedParts = {}
-
-    for _, name in ipairs(targets) do
-        local part = selectFolder:FindFirstChild(name)
-        if part then
-            local choiceType = part:GetAttribute("ChoiceType")
-            local choiceName = part:GetAttribute("ChoiceName")
-
-            if choiceType and choiceName then
-                local upperType = tostring(choiceType):upper()
-                local isMatched = false
-
-                if upperType == "ENEMIES" then
-                    isMatched = isValueWhitelisted(choiceName, Settings.EnemiesWhitelist)
-                elseif upperType == "UPGRADES" then
-                    isMatched = isValueWhitelisted(choiceName, Settings.UpgradesWhitelist)
-                elseif upperType == "CURSES" or upperType == "GREAT CURSES" or upperType == "GREATCURSES" then
-                    isMatched = isValueWhitelisted(choiceName, Settings.CursesWhitelist)
-                end
-
-                if isMatched then
-                    table.insert(matchedParts, part)
-                end
-            end
-        end
+    if not selectFolder or not (selectFolder:FindFirstChild("1") or selectFolder:FindFirstChild("2") or selectFolder:FindFirstChild("3")) then 
+        table.clear(selectionState.failedParts)
+        selectionState.rerollCount = 0
+        return 
     end
 
     isAutoFarmProcessing = true
     task.spawn(function()
-        local pickedCount = 0
+        pcall(function()
+            local maxRerolls = 5
+            local maxIterations = 25
+            local iteration = 0
 
-        if #matchedParts > 0 then
-            -- Randomize order for selection
-            for i = #matchedParts, 2, -1 do
-                local j = math.random(i)
-                matchedParts[i], matchedParts[j] = matchedParts[j], matchedParts[i]
+            local function getBoardState()
+                local s = workspace:FindFirstChild("Select")
+                if not s then return "" end
+                local p1 = s:FindFirstChild("1")
+                local p2 = s:FindFirstChild("2")
+                return (p1 and tostring(p1:GetAttribute("ChoiceName")) or "") .. "|" .. (p2 and tostring(p2:GetAttribute("ChoiceName")) or "")
             end
 
-            for _, chosenPart in ipairs(matchedParts) do
-                if pickedCount >= 4 then break end
+            local function attemptBuy(partName)
+                local attempts = 0
+                local initialState = getBoardState()
                 
-                if pickedCount > 0 then
-                    task.wait(0.5)
+                while attempts < 4 and Settings.AutoFarmBeta do
+                    local sFolder = workspace:FindFirstChild("Select")
+                    if not sFolder then return true end
+                    local p = sFolder:FindFirstChild(partName)
+                    if not p then return true end 
+
+                    interactWithPart(p)
+                    attempts = attempts + 1
+                    
+                    if attempts < 4 then
+                        task.wait(1.5) 
+                    end
+                    
+                    local newState = getBoardState()
+                    if partName == "Reroll" then
+                        if newState ~= initialState then return true end 
+                    else
+                        if not sFolder:FindFirstChild(partName) or newState ~= initialState then return true end
+                    end
                 end
-
-                interactWithPart(chosenPart)
-                pickedCount += 1
-            end
-        end
-
-        -- Teleport to select["3"] and interact
-        local part3 = selectFolder:FindFirstChild("3")
-        if part3 then
-            if pickedCount > 0 then task.wait(0.5) end
-            
-            local char = plr.Character
-            local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
-            if root then
-                root.CFrame = part3.CFrame + Vector3.new(0, 3, 0)
+                
+                selectionState.failedParts[partName] = true
+                return false 
             end
 
-            local startTime = os.clock()
-            while (os.clock() - startTime) < 2 do
-                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
-                task.wait(0.05)
-                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+            while Settings.AutoFarmBeta and iteration < maxIterations do
+                iteration = iteration + 1
+                selectFolder = workspace:FindFirstChild("Select")
+                if not selectFolder then break end
 
-                local closestPrompt = nil
-                local shortestDist = 10
-                for _, prompt in ipairs(workspace:GetDescendants()) do
-                    if prompt:IsA("ProximityPrompt") and prompt.Parent and prompt.Parent:IsA("BasePart") then
-                        local dist = (prompt.Parent.Position - part3.Position).Magnitude
-                        if dist < shortestDist then
-                            shortestDist = dist
-                            closestPrompt = prompt
+                local rerollPart = selectFolder:FindFirstChild("Reroll")
+                local part3 = selectFolder:FindFirstChild("3")
+
+                local targetPartName = nil
+                local anyWhitelistActive = hasAnyActiveWhitelist()
+                local isCurseOrEnemySelection = false
+                local activeSpecificWhitelist = false
+
+                for _, name in ipairs({"1", "2"}) do
+                    local part = selectFolder:FindFirstChild(name)
+                    if part then
+                        local choiceType = tostring(part:GetAttribute("ChoiceType") or "")
+                        if choiceType:upper():find("CURSE") then
+                            isCurseOrEnemySelection = true
+                            activeSpecificWhitelist = (Settings.CursesWhitelist and next(Settings.CursesWhitelist) ~= nil)
+                            break
+                        elseif choiceType:upper():find("ENEM") then
+                            isCurseOrEnemySelection = true
+                            activeSpecificWhitelist = (Settings.EnemiesWhitelist and next(Settings.EnemiesWhitelist) ~= nil)
+                            break
                         end
                     end
                 end
 
-                if closestPrompt then
-                    pcall(function()
-                        if fireproximityprompt then
-                            fireproximityprompt(closestPrompt)
+                for _, name in ipairs({"1", "2"}) do
+                    if not selectionState.failedParts[name] then
+                        local part = selectFolder:FindFirstChild(name)
+                        if part then
+                            local choiceName = tostring(part:GetAttribute("ChoiceName") or "")
+                            if choiceName:lower():find("medalcurse") or choiceName:lower():find("medalcurses") then
+                                targetPartName = name
+                                break
+                            end
                         end
-                    end)
+                    end
                 end
 
-                task.wait(0.4)
+                if not targetPartName then
+                    for _, name in ipairs({"1", "2"}) do
+                        if not selectionState.failedParts[name] then
+                            local part = selectFolder:FindFirstChild(name)
+                            if part and checkPartMatch(part) then
+                                targetPartName = name
+                                break
+                            end
+                        end
+                    end
+                end
+
+                if not targetPartName and not anyWhitelistActive then
+                    local validParts = {}
+                    for _, name in ipairs({"1", "2"}) do
+                        if not selectionState.failedParts[name] and selectFolder:FindFirstChild(name) then
+                            table.insert(validParts, name)
+                        end
+                    end
+                    if #validParts > 0 then
+                        targetPartName = validParts[math.random(1, #validParts)]
+                    end
+                end
+
+                if targetPartName then
+                    local success = attemptBuy(targetPartName)
+                    if success then continue end
+                else
+                    if rerollPart and selectionState.rerollCount < maxRerolls and anyWhitelistActive and not selectionState.failedParts["Reroll"] then
+                        if not isCurseOrEnemySelection then
+                            local success = attemptBuy("Reroll")
+                            if success then
+                                selectionState.rerollCount = selectionState.rerollCount + 1
+                                selectionState.failedParts["1"] = nil
+                                selectionState.failedParts["2"] = nil
+                                continue 
+                            end
+                        end
+                    end
+
+                    if isCurseOrEnemySelection then
+                        if part3 and not selectionState.failedParts["3"] then
+                            targetPartName = "3"
+                            local success = attemptBuy("3")
+                            if success then continue end
+                        elseif not activeSpecificWhitelist then
+                            local validParts = {}
+                            for _, name in ipairs({"1", "2"}) do
+                                if not selectionState.failedParts[name] and selectFolder:FindFirstChild(name) then
+                                    table.insert(validParts, name)
+                                end
+                            end
+                            if #validParts > 0 then
+                                targetPartName = validParts[math.random(1, #validParts)]
+                                local success = attemptBuy(targetPartName)
+                                if success then continue end
+                            end
+                        else
+                            local validParts = {}
+                            for _, name in ipairs({"1", "2"}) do
+                                if not selectionState.failedParts[name] and selectFolder:FindFirstChild(name) then
+                                    table.insert(validParts, name)
+                                end
+                            end
+                            if #validParts > 0 then
+                                targetPartName = validParts[math.random(1, #validParts)]
+                                local success = attemptBuy(targetPartName)
+                                if success then continue end
+                            end
+                        end
+                    end
+                    
+                    if part3 and not selectionState.failedParts["3"] then
+                        attemptBuy("3")
+                    end
+                    
+                    break 
+                end
             end
 
-            interactWithPart(part3)
-        end
+            beaconFiredTime = os.clock()
+            local startRespawns = respawnCounter
 
-        beaconFiredTime = os.clock()
-        local startRespawns = respawnCounter
-
-        while isAutoFarmProcessing do
-            if (respawnCounter - startRespawns) >= 2 then break end
-            if beaconFiredTime and (os.clock() - beaconFiredTime) >= 5 then break end
-            task.wait(0.1)
-        end
-
+            while isAutoFarmProcessing do
+                if (respawnCounter - startRespawns) >= 2 then break end
+                if beaconFiredTime and (os.clock() - beaconFiredTime) >= 5 then break end
+                task.wait(0.1)
+            end
+        end)
         isAutoFarmProcessing = false
     end)
 end
@@ -537,7 +939,7 @@ local function protectTripmine(trip)
     local sphere = createProtectionSphere(trip, radius, Color3.fromRGB(0, 255, 150))
     activeTripmineProtections[trip] = { sphere = sphere, radius = radius }
 
-    trip.Destroying:Connect(function()
+    local conn = trip.Destroying:Connect(function()
         if activeTripmineProtections[trip] then
             if activeTripmineProtections[trip].sphere then
                 activeTripmineProtections[trip].sphere:Destroy()
@@ -545,6 +947,7 @@ local function protectTripmine(trip)
             activeTripmineProtections[trip] = nil
         end
     end)
+    table.insert(scriptConnections, conn)
 end
 
 local function protectBullet(b)
@@ -554,7 +957,7 @@ local function protectBullet(b)
     local sphere = createProtectionSphere(b, radius, Color3.fromRGB(255, 50, 50))
     activeBulletProtections[b] = { sphere = sphere, radius = radius }
 
-    b.Destroying:Connect(function()
+    local conn = b.Destroying:Connect(function()
         if activeBulletProtections[b] then
             if activeBulletProtections[b].sphere then
                 activeBulletProtections[b].sphere:Destroy()
@@ -562,6 +965,7 @@ local function protectBullet(b)
             activeBulletProtections[b] = nil
         end
     end)
+    table.insert(scriptConnections, conn)
 end
 
 local lastProtectionScan = 0
@@ -619,9 +1023,6 @@ local function notif(msg, title)
         Library:Notify(string.format("[%s]: %s", title or "System", msg), 3)
     end
 end
-
-local function getChar(player) return player and player.Character end
-local function getRoot(character) return character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character.PrimaryPart) end
 
 local function refreshGifts(normal, golden)
     table.clear(availableNormalGifts)
@@ -744,22 +1145,23 @@ local function moveToGift(targetGift)
 end
 
 local function handleSpawnNavigation()
-    local targetSpawn = workspace:FindFirstChild("Spawn") or workspace:FindFirstChild("SpawnLocation") or workspace:FindFirstChild("Beacons")
-    if targetSpawn then
-        local part = targetSpawn:IsA("BasePart") and targetSpawn or targetSpawn:FindFirstChildWhichIsA("BasePart")
-        if part and part.Position ~= Vector3.new(0,0,0) then
+    local spawnNames = {"Spawn", "SpawnLocation"}
+    for _, sName in ipairs(spawnNames) do
+        local targetSpawn = workspace:FindFirstChild(sName)
+        if targetSpawn and targetSpawn:IsA("BasePart") and targetSpawn.Position ~= Vector3.new(0,0,0) then
             local char = getChar(plr)
             local root = getRoot(char)
             if root then
-                if Settings.LegitCollection then
-                    walkToPositionPathfinding(part.Position)
-                else
-                    root.CFrame = part.CFrame + Vector3.new(0, 15, 0)
+                if Settings.LegitCollection then 
+                    walkToPositionPathfinding(targetSpawn.Position)
+                else 
+                    root.CFrame = targetSpawn.CFrame + Vector3.new(0, 5, 0) 
                 end
                 return true
             end
         end
     end
+    
     return false
 end
 
@@ -773,16 +1175,19 @@ local function stopAllCollection()
         currentTween:Cancel()
         currentTween = nil
     end
-    if Options then
-        if Options.CollectNormalToggle then Options.CollectNormalToggle:SetValue(false) end
-        if Options.CollectGoldenToggle then Options.CollectGoldenToggle:SetValue(false) end
-        if Options.LegitCollectionToggle then Options.LegitCollectionToggle:SetValue(false) end
-    end
+    
+    local normalToggle = getToggle("CollectNormalToggle")
+    if normalToggle then normalToggle:SetValue(false) end
+
+    local goldenToggle = getToggle("CollectGoldenToggle")
+    if goldenToggle then goldenToggle:SetValue(false) end
+
+    local legitToggle = getToggle("LegitCollectionToggle")
+    if legitToggle then legitToggle:SetValue(false) end
 end
 
-local function collectGiftsEngine(isGoldenTarget)
+collectGiftsEngine = function(isGoldenTarget)
     if tweening then
-        if notifOn then notif("Already collecting gifts.", "Collection System") end
         return
     end
     tweening = true
@@ -807,21 +1212,28 @@ local function collectGiftsEngine(isGoldenTarget)
             if not gift then
                 failedAttempts += 1
                 if not isGoldenTarget then
-                    if failedAttempts >= 2 or #availableNormalGifts == 0 then
+                    if failedAttempts >= 3 or #availableNormalGifts == 0 then
                         if notifOn then notif("No normal gifts left. Switching to Golden Gifts.", "Collection System") end
                         Settings.CollectNormal = false
-                        if Options and Options.CollectNormalToggle then Options.CollectNormalToggle:SetValue(false) end
+                        
+                        local normalTgl = getToggle("CollectNormalToggle")
+                        if normalTgl then normalTgl:SetValue(false) end
+                        
                         Settings.CollectGolden = true
-                        if Options and Options.CollectGoldenToggle then Options.CollectGoldenToggle:SetValue(true) end
+                        local goldenTgl = getToggle("CollectGoldenToggle")
+                        if goldenTgl then goldenTgl:SetValue(true) end
+                        
                         tweening = false
                         task.defer(function() collectGiftsEngine(true) end)
                         return
                     end
                 else
-                    if notifOn then notif("No Golden Gifts remaining. Disabling gift collection.", "Collection System") end
-                    if Settings.AutoBeacon then handleSpawnNavigation() end
-                    stopAllCollection()
-                    break
+                    if failedAttempts >= 3 or #availableGoldenGifts == 0 then
+                        if notifOn then notif("No Golden Gifts remaining. Disabling gift collection.", "Collection System") end
+                        if Settings.AutoBeacon then handleSpawnNavigation() end
+                        stopAllCollection()
+                        break
+                    end
                 end
                 task.wait(0.5) 
                 table.clear(blacklistedGifts) 
@@ -831,13 +1243,13 @@ local function collectGiftsEngine(isGoldenTarget)
             failedAttempts = 0
             blacklistedGifts[gift] = true
             currentTween = moveToGift(gift)
-            
+
             if currentTween then
                 currentTween.Completed:Wait()
             elseif not Settings.LegitCollection then
                 RunService.Heartbeat:Wait()
             end
-            
+
             if Settings.DelayBetweenGifts and Settings.DelayBetweenGifts > 0 then
                 task.wait(Settings.DelayBetweenGifts)
             end
@@ -867,7 +1279,7 @@ end
 local function disableEnemy(name, destroy, breakAI, disableAI)
     local target = enemies and enemies:FindFirstChild(name)
     if not target then return false end
-    
+
     if destroy then
         target:Destroy()
         return true
@@ -905,16 +1317,20 @@ local function processPortedDisables()
         local nameLower = instance.Name:lower()
 
         if disableSeaMines and (nameLower:find("seamine") or nameLower:find("sea_mine") or nameLower:find("mine")) and not nameLower:find("trip") then
-            pcall(function() instance:Destroy() end); return
+            pcall(function() instance:Destroy() end)
+            return
         end
         if disableVoidImplosions and (nameLower:find("voidimplosion") or nameLower:find("implosion") or nameLower:find("void_implosion")) then
-            pcall(function() instance:Destroy() end); return
+            pcall(function() instance:Destroy() end)
+            return
         end
         if disableFakeBeacons and (nameLower:find("fakebeacon") or nameLower:find("fake_beacon") or (nameLower:find("beacon") and nameLower:find("fake"))) then
-            pcall(function() instance:Destroy() end); return
+            pcall(function() instance:Destroy() end)
+            return
         end
         if disableOblivion and (nameLower:find("oblivion") or nameLower:find("oblivionentity")) then
-            pcall(function() instance:Destroy() end); return
+            pcall(function() instance:Destroy() end)
+            return
         end
     end
 
@@ -987,6 +1403,8 @@ connections["MainHeartbeat"] = RunService.Heartbeat:Connect(function()
     processProtections()
     processAntiVoid()
     checkAndVoteSelectParts()
+    processAutoPylon()
+    destroyRazorbloom()
 
     local char = getChar(plr)
     local root = getRoot(char)
@@ -1007,33 +1425,29 @@ connections["MainHeartbeat"] = RunService.Heartbeat:Connect(function()
         end
     end
 end)
+table.insert(scriptConnections, connections["MainHeartbeat"])
 
 --------------------------------------------------------------------
--- Load Obsidian UI Library
+-- Load Obsidian UI Library & Addons
 --------------------------------------------------------------------
 Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/ThemeManager.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua"))()
 
 local Loading = Library:CreateLoading({
-    Title = "Null GUI - Java.", Icon = "rbxassetid://138541249910408", TotalSteps = 4
+    Title = "Null GUI - Java.", Icon = "7476151111", TotalSteps = 4
 })
 
 Loading:SetMessage("Initializing...")
-Loading:SetDescription("Waiting for game to load...")
-task.wait(1)
+Loading:SetDescription("Checking environment...")
 Loading:SetCurrentStep(1)
-Loading:SetDescription("Checking Place ID compatibility...")
-task.wait(3)
-Loading:SetCurrentStep(2)
 Loading:ShowSidebarPage(true)
 Loading.Sidebar:AddLabel("User: " .. game.Players.LocalPlayer.Name)
 Loading.Sidebar:AddLabel("Version: v1")
 Loading.Sidebar:AddLabel("Mode: " .. (isSupportedPlace and "Nullscape Gui" or "Universal Gui"))
-task.wait(2)
+Loading:SetCurrentStep(2)
 Loading:SetCurrentStep(3)
-Loading:SetDescription("Script has successfully loaded!")
-task.wait(1)
+Loading:SetDescription("Script loaded successfully!")
 Loading:SetCurrentStep(4)
 Loading:Continue()
 
@@ -1051,10 +1465,123 @@ if isSupportedPlace then
     Tabs.Playerlist = Window:AddTab("Main", "paw-print")
     Tabs.Enemies    = Window:AddTab("Enemies", "triangle-alert")
     Tabs.Map        = Window:AddTab("Map", "map")
-    Tabs.Music      = Window:AddTab("Music", "music")
     Tabs.Upgrades   = Window:AddTab("Upgrades", "shield-plus")
     Tabs.Debug      = Window:AddTab("Debug", "bug")
+    Tabs.Credits    = Window:AddTab("Credits", "info")
     Tabs.Settings   = Window:AddTab("Settings", "settings")
+
+    --------------------------------------------------------------------
+    -- Gifts Collection Groupbox
+    --------------------------------------------------------------------
+    local GiftGroup = Tabs.Playerlist:AddRightGroupbox("Gifts Collection")
+
+    GiftGroup:AddLabel("<font color='#AAAAAA'><b>NOTE:</b> Finding gifts can be slow\n Use Instant TP for max collection.</font>")
+
+    GiftGroup:AddToggle("AutoStartCollectingToggle", {
+        Text = "<font color='#00FFCC'>Auto start collecting</font>",
+        Default = Settings.AutoStartCollecting,
+        Tooltip = "Automatically starts/restarts normal gift collection when SoundService.SFXFolder.NewLevel plays.",
+        Callback = function(Value)
+            Settings.AutoStartCollecting = Value
+            if Value then
+                local sfxFolder = SoundService:FindFirstChild("SFXFolder")
+                local newLevelSound = sfxFolder and sfxFolder:FindFirstChild("NewLevel")
+                if newLevelSound and newLevelSound:IsA("Sound") then
+                    if connections["AutoStartCollectingConn"] then connections["AutoStartCollectingConn"]:Disconnect() end
+                    connections["AutoStartCollectingConn"] = newLevelSound.Played:Connect(function()
+                        if Settings.AutoStartCollecting then
+                            Settings.CollectNormal = true
+                            local normalTgl = getToggle("CollectNormalToggle")
+                            if normalTgl then normalTgl:SetValue(true) end
+                            if tweening then stopAllCollection(); task.wait(0.1) end
+                            collectGiftsEngine(false)
+                            if notifOn then notif("NewLevel sound detected. Auto-started normal gift collection.", "Collection System") end
+                        end
+                    end)
+                    table.insert(scriptConnections, connections["AutoStartCollectingConn"])
+                end
+            else
+                if connections["AutoStartCollectingConn"] then
+                    connections["AutoStartCollectingConn"]:Disconnect()
+                    connections["AutoStartCollectingConn"] = nil
+                end
+            end
+        end
+    })
+
+    GiftGroup:AddToggle("CollectNormalToggle", {
+        Text = "<font color='#AA55FF'>Collect Normal Gifts</font>",
+        Default = Settings.CollectNormal,
+        Callback = function(Value)
+            Settings.CollectNormal = Value
+            if Value then
+                if Settings.CollectGolden then
+                    Settings.CollectGolden = false
+                    local goldenTgl = getToggle("CollectGoldenToggle")
+                    if goldenTgl then goldenTgl:SetValue(false) end
+                end
+                collectGiftsEngine(false)
+            else
+                if not Settings.CollectGolden and tweening then stopAllCollection() end
+            end
+        end
+    })
+
+    GiftGroup:AddToggle("CollectGoldenToggle", {
+        Text = "<font color='#FFCC00'>Collect Golden Gifts</font>",
+        Default = Settings.CollectGolden,
+        Callback = function(Value)
+            Settings.CollectGolden = Value
+            if Value then
+                if Settings.CollectNormal then
+                    Settings.CollectNormal = false
+                    local normalTgl = getToggle("CollectNormalToggle")
+                    if normalTgl then normalTgl:SetValue(false) end
+                end
+                collectGiftsEngine(true)
+            else
+                if not Settings.CollectNormal and tweening then stopAllCollection() end
+            end
+        end
+    })
+
+    GiftGroup:AddToggle("LegitCollectionToggle", {
+        Text = "<font color='#FF4444'>Legit collection (slow)</font>",
+        Default = Settings.LegitCollection,
+        Tooltip = "Uses PathfindingService to naturally walk to gifts instead of teleporting.",
+        Callback = function(Value)
+            Settings.LegitCollection = Value
+            if Value then Library:Notify("Legit Pathfinding Mode Enabled.", 2) end
+        end
+    })
+
+    GiftGroup:AddInput("LegitSpeedInput", {
+        Default = tostring(Settings.LegitSpeed), Numeric = true, Finished = true, Text = "Legit WalkSpeed",
+        Placeholder = "16...", Callback = function(Value)
+            local num = tonumber(Value)
+            if num and num > 0 then Settings.LegitSpeed = num; Library:Notify("Legit Speed set to " .. tostring(num), 2) end
+        end
+    })
+
+    GiftGroup:AddToggle("AutoBeaconToggle", { Text = "<font color='#00FF00'>Walk/TP To Beacon On Finish</font>", Default = Settings.AutoBeacon, Callback = function(Value) Settings.AutoBeacon = Value end })
+    GiftGroup:AddButton({ Text = "<font color='#FF4444'>Cancel Gift Collection</font>", Func = function() stopAllCollection(); Library:Notify("Cancelled gift collection.", 2) end })
+    GiftGroup:AddToggle("InstantTPToggle", { Text = "Instant Teleport Collection", Default = Settings.InstantTeleport, Callback = function(Value) Settings.InstantTeleport = Value end })
+
+    GiftGroup:AddInput("TweenSpeedInput", {
+        Default = tostring(Settings.TweenSpeed), Numeric = true, Finished = true, Text = "Tween Speed (If TP Off)",
+        Placeholder = "300...", Callback = function(Value)
+            local num = tonumber(Value)
+            if num and num > 0 then Settings.TweenSpeed = num; Library:Notify("Tween Speed set to " .. tostring(num), 2) end
+        end
+    })
+
+    GiftGroup:AddInput("TeleportDelayInput", {
+        Default = tostring(Settings.DelayBetweenGifts), Numeric = true, Finished = true, Text = "Teleport Delay (Seconds)",
+        Placeholder = "0.05...", Callback = function(Value)
+            local num = tonumber(Value)
+            if num and num >= 0 then Settings.DelayBetweenGifts = num; Library:Notify("Teleport Delay set to " .. tostring(num) .. "s", 2) end
+        end
+    })
 
     --------------------------------------------------------------------
     -- Farm Groupbox & Select Whitelists
@@ -1064,15 +1591,69 @@ if isSupportedPlace then
     FarmGroup:AddToggle("AutoFarmBetaToggle", {
         Text = "auto farm (beta)",
         Default = Settings.AutoFarmBeta,
-        Tooltip = "ENABLE AUTO START COLLECTING TOO!! (will be fixed later).",
+        Tooltip = "Auto enables start collecting, beacon TP, and enemy deletion.",
         Callback = function(Value)
             Settings.AutoFarmBeta = Value
+            local autoStartTgl = getToggle("AutoStartCollectingToggle")
+            local autoBeaconTgl = getToggle("AutoBeaconToggle")
+            local collectNormalTgl = getToggle("CollectNormalToggle")
+            local deleteAllEnemiesTgl = getToggle("DeleteAllEnemies")
+
             if Value then
-                Settings.AutoStartCollecting = true
-                if Options and Options.AutoStartCollectingToggle then Options.AutoStartCollectingToggle:SetValue(true) end
+                if autoStartTgl then autoStartTgl:SetValue(true) else Settings.AutoStartCollecting = true end
+                if autoBeaconTgl then autoBeaconTgl:SetValue(true) else Settings.AutoBeacon = true end
+                if collectNormalTgl then collectNormalTgl:SetValue(true) else Settings.CollectNormal = true end
+                if deleteAllEnemiesTgl then deleteAllEnemiesTgl:SetValue(true) else deleteAllEnemies = true end
+
                 Library:Notify("Auto Farm (Beta) Enabled.", 2)
             else
+                if autoStartTgl then autoStartTgl:SetValue(false) else Settings.AutoStartCollecting = false end
+                if autoBeaconTgl then autoBeaconTgl:SetValue(false) else Settings.AutoBeacon = false end
+                if collectNormalTgl then collectNormalTgl:SetValue(false) else Settings.CollectNormal = false end
+                if deleteAllEnemiesTgl then deleteAllEnemiesTgl:SetValue(false) else deleteAllEnemies = false end
+
                 Library:Notify("Auto Farm (Beta) Disabled.", 2)
+            end
+        end
+    })
+
+    FarmGroup:AddButton({
+        Text = "Teleport to Pylon",
+        Func = function()
+            teleportToNearestPylon()
+        end
+    })
+
+    FarmGroup:AddToggle("AutoPylonToggle", {
+        Text = "Teleport to pylon",
+        Default = Settings.AutoPylon,
+        Tooltip = "Teleports to and completes pylons one by one as they spawn.",
+        Callback = function(Value)
+            Settings.AutoPylon = Value
+            if Value then
+                Library:Notify("Auto Teleport to Pylon Enabled.", 2)
+                teleportToNearestPylon()
+            else
+                Library:Notify("Auto Teleport to Pylon Disabled.", 2)
+            end
+        end
+    })
+
+    FarmGroup:AddInput("TargetLevelVoidInput", {
+        Text = "Auto Void at Level",
+        Default = "",
+        Numeric = true,
+        Finished = false,
+        Placeholder = "Target Level (e.g. 2)...",
+        Tooltip = "Input player level to automatically teleport character into the void upon reaching it.",
+        Callback = function(Value)
+            local num = tonumber(Value)
+            if num and num > 0 then
+                Settings.TargetLevel = num
+                Library:Notify("Auto Void set for Level " .. tostring(num), 2)
+            else
+                Settings.TargetLevel = nil
+                Library:Notify("Auto Void Level disabled.", 2)
             end
         end
     })
@@ -1120,114 +1701,36 @@ if isSupportedPlace then
         end
     })
 
-    --------------------------------------------------------------------
-    -- Gifts Collection
-    --------------------------------------------------------------------
-    local GiftGroup = Tabs.Playerlist:AddRightGroupbox("Gifts Collection")
-
-    GiftGroup:AddLabel("<font color='#AAAAAA'><b>NOTE:</b> Finding gifts can be slow\n Use Instant TP for max collection.</font>")
-
-    GiftGroup:AddToggle("AutoStartCollectingToggle", {
-        Text = "<font color='#00FFCC'>Auto start collecting</font>",
-        Default = Settings.AutoStartCollecting,
-        Tooltip = "Automatically starts/restarts normal gift collection when SoundService.SFXFolder.NewLevel plays.",
+    PlayerGroup:AddToggle("DestroyRazorbloomToggle", {
+        Text = "<font color='#FF6666'>Destroy Razorbloom (VISIBLE TO OTHERS)</font>",
+        Default = nrb,
+        Tooltip = "Automatically destroys Razorbloom objects from your character when they appear.",
         Callback = function(Value)
-            Settings.AutoStartCollecting = Value
+            nrb = Value
             if Value then
-                local sfxFolder = SoundService:FindFirstChild("SFXFolder")
-                local newLevelSound = sfxFolder and sfxFolder:FindFirstChild("NewLevel")
-                if newLevelSound and newLevelSound:IsA("Sound") then
-                    if connections["AutoStartCollectingConn"] then connections["AutoStartCollectingConn"]:Disconnect() end
-                    connections["AutoStartCollectingConn"] = newLevelSound.Played:Connect(function()
-                        if Settings.AutoStartCollecting then
-                            Settings.CollectNormal = true
-                            if Options and Options.CollectNormalToggle then Options.CollectNormalToggle:SetValue(true) end
-                            if tweening then stopAllCollection(); task.wait(0.1) end
-                            collectGiftsEngine(false)
-                            if notifOn then notif("NewLevel sound detected. Auto-started normal gift collection.", "Collection System") end
-                        end
-                    end)
-                end
-                Library:Notify("Auto Start Collecting Enabled.", 2)
+                destroyRazorbloom()
+                Library:Notify("Razorbloom Destroyer enabled.", 2)
             else
-                if connections["AutoStartCollectingConn"] then
-                    connections["AutoStartCollectingConn"]:Disconnect()
-                    connections["AutoStartCollectingConn"] = nil
-                end
-                Library:Notify("Auto Start Collecting Disabled.", 2)
+                Library:Notify("Razorbloom Destroyer disabled.", 2)
             end
         end
     })
 
-    GiftGroup:AddToggle("CollectNormalToggle", {
-        Text = "<font color='#AA55FF'>Collect Normal Gifts</font>",
-        Default = Settings.CollectNormal,
+    PlayerGroup:AddSlider("GiftCollectionRange", {
+        Text = "Gift collection range",
+        Default = 1,
+        Min = 0,
+        Max = 10,
+        Rounding = 0,
+        Tooltip = "Adds 30 Magnet upgrades per slider tick (0 sets magnet upgrade to 1).",
         Callback = function(Value)
-            Settings.CollectNormal = Value
-            if Value then
-                if Settings.CollectGolden then
-                    Settings.CollectGolden = false
-                    if Options and Options.CollectGoldenToggle then Options.CollectGoldenToggle:SetValue(false) end
-                end
-                collectGiftsEngine(false)
+            local magnetAmount
+            if Value == 0 then
+                magnetAmount = 1
             else
-                if not Settings.CollectGolden and tweening then stopAllCollection() end
+                magnetAmount = Value * 30
             end
-        end
-    })
-
-    GiftGroup:AddToggle("CollectGoldenToggle", {
-        Text = "<font color='#FFCC00'>Collect Golden Gifts</font>",
-        Default = Settings.CollectGolden,
-        Callback = function(Value)
-            Settings.CollectGolden = Value
-            if Value then
-                if Settings.CollectNormal then
-                    Settings.CollectNormal = false
-                    if Options and Options.CollectNormalToggle then Options.CollectNormalToggle:SetValue(false) end
-                end
-                collectGiftsEngine(true)
-            else
-                if not Settings.CollectNormal and tweening then stopAllCollection() end
-            end
-        end
-    })
-
-    GiftGroup:AddToggle("LegitCollectionToggle", {
-        Text = "<font color='#FF4444'>Legit collection (slow)</font>",
-        Default = Settings.LegitCollection,
-        Tooltip = "Uses PathfindingService to naturally walk to gifts instead of teleporting.",
-        Callback = function(Value)
-            Settings.LegitCollection = Value
-            if Value then Library:Notify("Legit Pathfinding Mode Enabled.", 2) end
-        end
-    })
-
-    GiftGroup:AddInput("LegitSpeedInput", {
-        Default = tostring(Settings.LegitSpeed), Numeric = true, Finished = true, Text = "Legit WalkSpeed",
-        Placeholder = "16...", Callback = function(Value)
-            local num = tonumber(Value)
-            if num and num > 0 then Settings.LegitSpeed = num; Library:Notify("Legit Speed set to " .. tostring(num), 2) end
-        end
-    })
-
-    GiftGroup:AddToggle("AutoBeaconToggle", { Text = "<font color='#00FF00'>Walk/TP To Beacon On Finish</font>", Default = Settings.AutoBeacon, Callback = function(Value) Settings.AutoBeacon = Value end })
-    GiftGroup:AddButton({ Text = "<font color='#FF4444'>Cancel Gift Collection</font>", Func = function() stopAllCollection(); Library:Notify("Cancelled gift collection.", 2) end })
-    GiftGroup:AddToggle("InstantTPToggle", { Text = "Instant Teleport Collection", Default = Settings.InstantTeleport, Callback = function(Value) Settings.InstantTeleport = Value end })
-    
-    GiftGroup:AddInput("TweenSpeedInput", {
-        Default = tostring(Settings.TweenSpeed), Numeric = true, Finished = true, Text = "Tween Speed (If TP Off)",
-        Placeholder = "300...", Callback = function(Value)
-            local num = tonumber(Value)
-            if num and num > 0 then Settings.TweenSpeed = num; Library:Notify("Tween Speed set to " .. tostring(num), 2) end
-        end
-    })
-
-    GiftGroup:AddInput("TeleportDelayInput", {
-        Default = tostring(Settings.DelayBetweenGifts), Numeric = true, Finished = true, Text = "Teleport Delay (Seconds)",
-        Placeholder = "0.05...", Callback = function(Value)
-            local num = tonumber(Value)
-            if num and num >= 0 then Settings.DelayBetweenGifts = num; Library:Notify("Teleport Delay set to " .. tostring(num) .. "s", 2) end
+            applyUpgradeValue("GiftMagnet", magnetAmount, upgradeLabels["GiftMagnet"])
         end
     })
 
@@ -1244,6 +1747,7 @@ if isSupportedPlace then
                     connections["DisableEnemies"] = enemies.ChildAdded:Connect(function(child)
                         if disableAllEnemies then task.wait(0.1); disableEnemyEntity(child) end
                     end)
+                    table.insert(scriptConnections, connections["DisableEnemies"])
                 end
                 Library:Notify("Workspace Enemy AI disabled.", 3)
             else
@@ -1262,6 +1766,7 @@ if isSupportedPlace then
                 connections["DisableClientEnemies"] = RunService.Heartbeat:Connect(function()
                     if disableClientEnemies then processClientSideEnemies() end
                 end)
+                table.insert(scriptConnections, connections["DisableClientEnemies"])
                 Library:Notify("Client-sided enemies disabler activated.", 3)
             else
                 if connections["DisableClientEnemies"] then connections["DisableClientEnemies"]:Disconnect(); connections["DisableClientEnemies"] = nil end
@@ -1271,12 +1776,13 @@ if isSupportedPlace then
     })
 
     EnemyControlGroup:AddToggle("DeleteAllEnemies", {
-        Text = "Delete All Enemies", Default = false,
+        Text = "Delete All Enemies", Default = Settings.DeleteAllEnemies,
         Callback = function(Value)
             deleteAllEnemies = Value
             if Value then
                 pb = true
-                if Options and Options.Guardian_Protection then Options.Guardian_Protection:SetValue(true) end
+                local guardianTgl = getToggle("Guardian_Protection")
+                if guardianTgl then guardianTgl:SetValue(true) end
                 if enemies then
                     purgeExistingEnemies()
                     connections["DeleteEnemies"] = enemies.ChildAdded:Connect(function(child)
@@ -1286,6 +1792,7 @@ if isSupportedPlace then
                             end)
                         end
                     end)
+                    table.insert(scriptConnections, connections["DeleteEnemies"])
                 end
                 Library:Notify("Auto-delete all enemies enabled (Guardian Protection active).", 3)
             else
@@ -1296,7 +1803,7 @@ if isSupportedPlace then
     })
 
     task.spawn(function()
-        while task.wait(0.5) do processPortedDisables() end
+        while task.wait(1) do processPortedDisables() end
     end)
 
     local EnemyActionGroup = Tabs.Enemies:AddRightGroupbox("Actions & Utilities")
@@ -1307,7 +1814,7 @@ if isSupportedPlace then
     local activeEnemiesLabel = ActiveEnemiesGroup:AddLabel("Scanning workspace...")
 
     task.spawn(function()
-        while task.wait(1) do
+        while task.wait(1.5) do
             if not enemies or #enemies:GetChildren() == 0 then
                 activeEnemiesLabel:SetText("<font color='#AAAAAA'>No active enemies</font>")
             else
@@ -1315,8 +1822,16 @@ if isSupportedPlace then
                 for _, enemy in ipairs(enemies:GetChildren()) do
                     local hum = enemy:FindFirstChildOfClass("Humanoid")
                     local isDisabled = false
-                    if hum and hum.PlatformStand then isDisabled = true elseif enemy:FindFirstChildOfClass("Script") and enemy:FindFirstChildOfClass("Script").Disabled then isDisabled = true end
-                    if isDisabled then table.insert(lines, string.format("<font color='#AAAAAA'>%s (Disabled)</font>", enemy.Name)) else table.insert(lines, string.format("<font color='#00FF00'>%s (Active)</font>", enemy.Name)) end
+                    if hum and hum.PlatformStand then 
+                        isDisabled = true 
+                    elseif enemy:FindFirstChildOfClass("Script") and enemy:FindFirstChildOfClass("Script").Disabled then 
+                        isDisabled = true 
+                    end
+                    if isDisabled then 
+                        table.insert(lines, string.format("<font color='#AAAAAA'>%s (Disabled)</font>", enemy.Name)) 
+                    else 
+                        table.insert(lines, string.format("<font color='#00FF00'>%s (Active)</font>", enemy.Name)) 
+                    end
                 end
                 activeEnemiesLabel:SetText(table.concat(lines, "\n"))
             end
@@ -1326,20 +1841,26 @@ if isSupportedPlace then
     local DetailedEnemyGroup = Tabs.Enemies:AddLeftGroupbox("Granular Enemy Options")
 
     task.spawn(function()
-        while task.wait(0.75) do
+        while task.wait(1) do
             if enemies then for _, enemy in ipairs(enemies:GetChildren()) do handleEnemy(enemy) end end
         end
     end)
     if enemies then
         connections["GranularChildAdded"] = enemies.ChildAdded:Connect(function(child) task.wait(0.1); handleEnemy(child) end)
+        table.insert(scriptConnections, connections["GranularChildAdded"])
     end
 
-    -- Setup for Granular Toggles...
     local function addDetailedEnemy(group, name)
         group:AddDivider(name)
-        if auto_disable[name] ~= nil then group:AddToggle(name.."_Disable", { Text = "Auto Disable", Default = auto_disable[name], Callback = function(v) auto_disable[name] = v if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) end
-        if auto_break[name] ~= nil then group:AddToggle(name.."_Break", { Text = "Auto Break AI", Default = auto_break[name], Callback = function(v) auto_break[name] = v if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) end
-        if auto_destroy[name] ~= nil then group:AddToggle(name.."_Destroy", { Text = "Auto Destroy", Default = auto_destroy[name], Callback = function(v) auto_destroy[name] = v if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) end
+        if auto_disable[name] ~= nil then 
+            group:AddToggle(name.."_Disable", { Text = "Auto Disable", Default = auto_disable[name], Callback = function(v) auto_disable[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
+        end
+        if auto_break[name] ~= nil then 
+            group:AddToggle(name.."_Break", { Text = "Auto Break AI", Default = auto_break[name], Callback = function(v) auto_break[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
+        end
+        if auto_destroy[name] ~= nil then 
+            group:AddToggle(name.."_Destroy", { Text = "Auto Destroy", Default = auto_destroy[name], Callback = function(v) auto_destroy[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
+        end
     end
 
     addDetailedEnemy(DetailedEnemyGroup, "Bell")
@@ -1349,8 +1870,28 @@ if isSupportedPlace then
     addDetailedEnemy(DetailedEnemyGroup, "ICBM")
     addDetailedEnemy(DetailedEnemyGroup, "Baby")
     addDetailedEnemy(DetailedEnemyGroup, "Flesh")
-    
-    DetailedEnemyGroup:AddDivider("Guardian (CANNOT BE DISABLED)")
+
+    DetailedEnemyGroup:AddDivider("Guardian Options")
+    DetailedEnemyGroup:AddToggle("Guardian_Immunity", {
+        Text = "Guardian Death Immunity",
+        Default = false,
+        Tooltip = "Blocks server death registration when killed by Guardian.",
+        Callback = function(Value)
+            guardianImmunity = Value
+            Library:Notify("Guardian Immunity " .. (Value and "Enabled" or "Disabled"), 2)
+        end
+    })
+
+    DetailedEnemyGroup:AddToggle("Shadow_Guardian_Immunity", {
+        Text = "Shadow Guardian Death Immunity",
+        Default = false,
+        Tooltip = "Blocks server death registration when killed by Shadow Guardian.",
+        Callback = function(Value)
+            voidboundGuardianImmunity = Value
+            Library:Notify("Shadow Guardian Immunity " .. (Value and "Enabled" or "Disabled"), 2)
+        end
+    })
+
     DetailedEnemyGroup:AddToggle("Guardian_Protection", {
         Text = "Create Bullet Protection Sphere", Default = pb,
         Callback = function(Value)
@@ -1383,11 +1924,11 @@ if isSupportedPlace then
     MapGroup:AddToggle("VisibleVoid", { Text = "Visible Void", Default = false, Callback = function(Value) local killVoid = workspace:FindFirstChild("KillVoid"); if killVoid then killVoid.Transparency = Value and 0 or 1 end end })
 
     local MapProtectionGroup = Tabs.Map:AddLeftGroupbox("Map Defenses")
-    MapProtectionGroup:AddToggle("Tripmine_Protection", { Text = "Tripmine Safe Sphere Protection", Default = pt, Callback = function(Value) pt = Value if not Value then for _, d in pairs(activeTripmineProtections) do if d.sphere then d.sphere:Destroy() end end table.clear(activeTripmineProtections) end end })
+    MapProtectionGroup:AddToggle("Tripmine_Protection", { Text = "Tripmine Safe Sphere Protection", Default = pt, Callback = function(Value) pt = Value; if not Value then for _, d in pairs(activeTripmineProtections) do if d.sphere then d.sphere:Destroy() end end table.clear(activeTripmineProtections) end end })
 
     local TilesGroup = Tabs.Map:AddRightGroupbox("tiles")
     TilesGroup:AddToggle("AntiFleshIceTiles", { Text = "Anti flesh tiles/ ice tiles (tile connection)", Default = false, Callback = function(Value) antiFleshTilesEnabled = Value; applyTileConnections() end })
-    TilesGroup:AddToggle("PersistentTileConnections", { Text = "Persistent tile connections", Default = false, Callback = function(Value) persistentTileConnections = Value if Value then if not persistentRespawnConnection then persistentRespawnConnection = plr.CharacterAdded:Connect(function() task.wait(1); if persistentTileConnections and antiFleshTilesEnabled then applyTileConnections() end end) end else if persistentRespawnConnection then persistentRespawnConnection:Disconnect(); persistentRespawnConnection = nil end end end })
+    TilesGroup:AddToggle("PersistentTileConnections", { Text = "Persistent tile connections", Default = false, Callback = function(Value) persistentTileConnections = Value; if Value then if not persistentRespawnConnection then persistentRespawnConnection = plr.CharacterAdded:Connect(function() task.wait(1); if persistentTileConnections and antiFleshTilesEnabled then applyTileConnections() end end) end else if persistentRespawnConnection then persistentRespawnConnection:Disconnect(); persistentRespawnConnection = nil end end end })
 
     local ExtraDisablesGroup = Tabs.Map:AddRightGroupbox("Null GUI Extra Disables")
     ExtraDisablesGroup:AddToggle("DisableSeaMines", { Text = "Disable Sea Mines", Default = false, Callback = function(Value) disableSeaMines = Value end })
@@ -1395,18 +1936,12 @@ if isSupportedPlace then
     ExtraDisablesGroup:AddToggle("DisableFakeBeacons", { Text = "Disable Fake Beacons", Default = false, Callback = function(Value) disableFakeBeacons = Value end })
     ExtraDisablesGroup:AddToggle("DisableOblivion", { Text = "Disable Oblivion", Default = false, Callback = function(Value) disableOblivion = Value end })
 
-    -- Music Tab
-    local MusicGroup = Tabs.Music:AddLeftGroupbox("Playback")
-    MusicGroup:AddButton({ Text = "Play Track 1", Func = function() if music and music:IsA("Sound") then music:Play() end end })
-    MusicGroup:AddButton({ Text = "Stop Music", Func = function() if music and music:IsA("Sound") then music:Stop() end end })
-    MusicGroup:AddSlider("VolumeSlider", { Text = "Volume", Default = 50, Min = 0, Max = 100, Rounding = 0, Suffix = "%", Callback = function(Value) if music and music:IsA("Sound") then music.Volume = Value / 100 end end })
-
     -- Upgrades Tab
     local upgradeTabLeft = Tabs.Upgrades:AddLeftGroupbox("Upgrades Status")
     if upgradeTabLeft.Container then upgradeTabLeft.Container.AutomaticSize = Enum.AutomaticSize.Y end
     if fSignal then upgradeTabLeft:AddLabel("Your exploit can add upgrades.") else upgradeTabLeft:AddLabel("Your exploit currently doesn't support adding upgrades.") end
     upgradeTabLeft:AddDivider("Active Upgrades List")
-    
+
     local activeUpgradesLabel = upgradeTabLeft:AddLabel("None Active")
     local clientUpgrades = { "MatrixTetrahedron", "Adrenaline", "HighlightGifts", "AdvancedGravityCoil", "SportShoes", "TheOrb", "RealWings", "GraceWings", "RadarPlayer", "RadarInstruments", "HighlightTripmines", "IceSkates", "SwiftnessRing", "GiftMagnet", "SharkTail", "EnemyOnTop", "PocketBell", "NinjaBelt", "Helmet", "DoubleJump", "RadarAltars" }
 
@@ -1414,7 +1949,10 @@ if isSupportedPlace then
         local textParts = {}
         for name, val in pairs(activeUpgrades) do if val > 0 then table.insert(textParts, string.format("<font color='#0055ff'>%s</font>: %d", name, val)) end end
         local fullText = #textParts > 0 and table.concat(textParts, "\n") or "None Active"
-        if activeUpgradesLabel and type(activeUpgradesLabel) == "table" and activeUpgradesLabel.TextLabel then activeUpgradesLabel.TextLabel.AutomaticSize = Enum.AutomaticSize.Y; activeUpgradesLabel.TextLabel.TextWrapped = true end
+        if activeUpgradesLabel and type(activeUpgradesLabel) == "table" and activeUpgradesLabel.TextLabel then 
+            activeUpgradesLabel.TextLabel.AutomaticSize = Enum.AutomaticSize.Y 
+            activeUpgradesLabel.TextLabel.TextWrapped = true 
+        end
         activeUpgradesLabel:SetText(fullText)
     end
 
@@ -1423,49 +1961,81 @@ if isSupportedPlace then
         upgradeValueGuards[name] = intv.Changed:Connect(function(newValue)
             if isSettingGuardValue[name] then return end
             local desiredValue = activeUpgrades[name]
-            if desiredValue and newValue ~= desiredValue then isSettingGuardValue[name] = true; intv.Value = desiredValue; isSettingGuardValue[name] = false end
+            if desiredValue and newValue ~= desiredValue then 
+                isSettingGuardValue[name] = true 
+                intv.Value = desiredValue 
+                isSettingGuardValue[name] = false 
+            end
         end)
+        table.insert(scriptConnections, upgradeValueGuards[name])
     end
 
     applyUpgradeValue = function(name, targetValue, uLabel)
         local upgradesFolder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
         local intv = upgradesFolder and upgradesFolder:FindFirstChild(name)
         targetValue = math.max(0, math.floor(targetValue or 0))
-        
+
         if targetValue > 0 then
             activeUpgrades[name] = targetValue
-            if intv then isSettingGuardValue[name] = true; intv.Value = targetValue; isSettingGuardValue[name] = false
-            else intv = Instance.new("IntValue"); intv.Name = name; intv.Value = targetValue; if upgradesFolder then intv.Parent = upgradesFolder end end
+            if intv then 
+                isSettingGuardValue[name] = true 
+                intv.Value = targetValue 
+                isSettingGuardValue[name] = false
+            else 
+                intv = Instance.new("IntValue") 
+                intv.Name = name 
+                intv.Value = targetValue 
+                if upgradesFolder then intv.Parent = upgradesFolder end 
+            end
             setupUpgradeGuardian(intv, name)
-            if events and events:FindFirstChild("UpgradesChanged") then pcall(function() if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = targetValue }) end if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = targetValue }) end end) end
+            if events and events:FindFirstChild("UpgradesChanged") then 
+                pcall(function() 
+                    if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = targetValue }) end 
+                    if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = targetValue }) end 
+                end) 
+            end
         else
             activeUpgrades[name] = nil
             if intv then intv:Destroy() end
             if upgradeValueGuards[name] then upgradeValueGuards[name]:Disconnect(); upgradeValueGuards[name] = nil end
-            if events and events:FindFirstChild("UpgradesChanged") then pcall(function() if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = 0 }) end if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = 0 }) end end) end
+            if events and events:FindFirstChild("UpgradesChanged") then 
+                pcall(function() 
+                    if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = 0 }) end 
+                    if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = 0 }) end 
+                end) 
+            end
         end
         if uLabel then uLabel:SetText("Current: " .. tostring(targetValue)) end
         updateActiveUpgradesDisplay()
     end
 
     local function restoreAllUpgrades()
-        local upgradeFolderParent = ReplicatedStorage:WaitForChild("UpgradeFolder", 5)
-        local upgradesFolder = upgradeFolderParent and upgradeFolderParent:WaitForChild("Upgrades", 5)
+        local upgradeFolderParent = ReplicatedStorage:FindFirstChild("UpgradeFolder")
+        local upgradesFolder = upgradeFolderParent and upgradeFolderParent:FindFirstChild("Upgrades")
         for name, value in pairs(activeUpgrades) do
             if value > 0 then
                 if upgradesFolder then
                     local intv = upgradesFolder:FindFirstChild(name)
                     if not intv then intv = Instance.new("IntValue"); intv.Name = name; intv.Parent = upgradesFolder end
-                    isSettingGuardValue[name] = true; intv.Value = value; isSettingGuardValue[name] = false
+                    isSettingGuardValue[name] = true 
+                    intv.Value = value 
+                    isSettingGuardValue[name] = false
                     setupUpgradeGuardian(intv, name)
-                    if events and events:FindFirstChild("UpgradesChanged") then pcall(function() if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = value }) end if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = value }) end end) end
+                    if events and events:FindFirstChild("UpgradesChanged") then 
+                        pcall(function() 
+                            if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = value }) end 
+                            if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = value }) end 
+                        end) 
+                    end
                 end
             end
         end
         updateActiveUpgradesDisplay()
     end
 
-    plr.CharacterAdded:Connect(function(newChar) task.wait(1); restoreAllUpgrades() end)
+    local charUpgradeConn = plr.CharacterAdded:Connect(function(newChar) task.wait(1); restoreAllUpgrades() end)
+    table.insert(scriptConnections, charUpgradeConn)
+
     local upgradeListGroup = Tabs.Upgrades:AddRightGroupbox("Available Upgrades")
 
     for _, u in ipairs(clientUpgrades) do
@@ -1473,15 +2043,15 @@ if isSupportedPlace then
         local initialVal = 0
         local upgradesFolder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
         local existingInt = upgradesFolder and upgradesFolder:FindFirstChild(u)
-        
+
         if existingInt then
             initialVal = existingInt.Value
             if initialVal > 0 then activeUpgrades[u] = initialVal; setupUpgradeGuardian(existingInt, u) end
         end
-        
+
         local uLabel = upgradeListGroup:AddLabel("Current: " .. tostring(initialVal))
         upgradeLabels[u] = uLabel
-        
+
         upgradeListGroup:AddInput(u .. "_Input", { Default = tostring(initialVal), Numeric = true, Finished = true, Text = "Set Amount", Placeholder = "Amount...", Callback = function(Value) local num = tonumber(Value) if num then applyUpgradeValue(u, num, uLabel) end end })
         upgradeListGroup:AddButton({ Text = "Add One (" .. u .. ")", Func = function() local current = activeUpgrades[u] or initialVal; applyUpgradeValue(u, current + 1, uLabel) end })
         upgradeListGroup:AddButton({ Text = "Remove One (" .. u .. ")", Func = function() local current = activeUpgrades[u] or initialVal; applyUpgradeValue(u, current - 1, uLabel) end })
@@ -1490,6 +2060,7 @@ if isSupportedPlace then
 else
     Tabs.UniversalMain = Window:AddTab("Main - Universal", "globe")
     Tabs.Debug         = Window:AddTab("Debug", "bug")
+    Tabs.Credits       = Window:AddTab("Credits", "info")
     Tabs.Settings      = Window:AddTab("Settings", "settings")
 
     local UniversalGroup = Tabs.UniversalMain:AddLeftGroupbox("Universal Features")
@@ -1508,124 +2079,77 @@ else
     TeleportGroup:AddButton({ Text = "Refresh Player List", Func = function() if Options and Options.TargetPlayerDropdown then Options.TargetPlayerDropdown:SetValues(getPlayerNames()) end end })
     TeleportGroup:AddButton({ Text = "Teleport to Player", Func = function() if selectedPlayer then local targetPlr = Players:FindFirstChild(selectedPlayer) if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame; Library:Notify("Teleported to " .. selectedPlayer, 3) end end end })
     TeleportGroup:AddButton({ Text = "Rejoin Server", Func = function() TeleportService:TeleportToPlaceInstance(PlaceId, JobId, plr) end })
-    TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/0?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, s in ipairs(servers.data) do if s.id ~= JobId and s.playing < s.maxPlayers then TeleportService:TeleportToPlaceInstance(PlaceId, s.id, plr); break end end end end })
+    TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, server in ipairs(servers.data) do if server.playing < server.maxPlayers and server.id ~= JobId then TeleportService:TeleportToPlaceInstance(PlaceId, server.id, plr); return end end end Library:Notify("Failed to find a server.", 3) end })
 end
 
 --------------------------------------------------------------------
--- Debug Tab (Loaded in BOTH modes)
+-- Credits Tab Groupboxes
 --------------------------------------------------------------------
-local DebugGroup = Tabs.Debug:AddLeftGroupbox("Server Info")
-local playerLabel = DebugGroup:AddLabel("Players: Fetching...")
-local pingLabel = DebugGroup:AddLabel("Ping: Fetching...")
-local clientFpsLabel = DebugGroup:AddLabel("Client FPS: Fetching...")
-local serverFpsLabel = DebugGroup:AddLabel("Server FPS: Fetching...")
-local locationLabel = DebugGroup:AddLabel("Server Region: Fetching...")
-local uptimeLabel = DebugGroup:AddLabel("Server Uptime: Fetching...")
+local ContributorsGroup = Tabs.Credits:AddLeftGroupbox("Contributors")
+ContributorsGroup:AddLabel("<font color='#FFA500'>kaoru_zz</font>; Guardians anti-kill")
+ContributorsGroup:AddLabel("<font color='#FFA500'>(Ali)zeja</font> Main script, Huge inspiration!")
 
-local clientFPS = 0
-local frameCount = 0
-local lastFpsUpdate = os.clock()
-RunService.RenderStepped:Connect(function()
-    frameCount += 1
-    local now = os.clock()
-    if now - lastFpsUpdate >= 1 then clientFPS = frameCount / (now - lastFpsUpdate); frameCount = 0; lastFpsUpdate = now end
-end)
+local DevelopersGroup = Tabs.Credits:AddRightGroupbox("Developers")
+DevelopersGroup:AddLabel("<font color='#AA55FF'>Java (.html4)</font> Main Developer")
 
-local serverLocation = "Estimating..."
-task.spawn(function()
-    task.wait(1)
-    local playersList = Players:GetPlayers()
-    if #playersList > 0 then
-        local success, regionCode = pcall(function() return LocalizationService:GetCountryRegionForPlayerAsync(playersList[1]) end)
-        if success and regionCode then serverLocation = regionCode .. " (Est.)" else serverLocation = "Hidden by Roblox" end
-    else
-        serverLocation = "Unknown"
-    end
-end)
-
-local function formatUptime(seconds)
-    local totalSeconds = math.floor(seconds)
-    local hours = math.floor(totalSeconds / 3600)
-    local minutes = math.floor((totalSeconds % 3600) / 60)
-    local secs = totalSeconds % 60
-    if hours > 0 then return string.format("%d:%02d:%02d", hours, minutes, secs) else return string.format("%d:%02d", minutes, secs) end
-end
-
-local function getDebugData()
-    local currentPlayers = Players:GetPlayers()
-    local ping = math.round(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
-    local serverFPS = math.round(workspace:GetRealPhysicsFPS())
-    local uptimeSeconds = workspace.DistributedGameTime
-    return { Players = string.format("%d/%d", #currentPlayers, Players.MaxPlayers), Ping = string.format("%d ms", ping), ClientFPS = math.round(clientFPS), ServerFPS = serverFPS, Location = serverLocation, Uptime = formatUptime(uptimeSeconds), PlayerList = currentPlayers }
-end
-
-DebugGroup:AddButton({ Text = "Refresh Info", Func = function() local data = getDebugData(); playerLabel:SetText("Players: " .. data.Players); pingLabel:SetText("Ping: " .. data.Ping); clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS); serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS); locationLabel:SetText("Server Region: " .. data.Location); uptimeLabel:SetText("Server Uptime: " .. data.Uptime); Library:Notify("Server Stats Refreshed!", 3) end })
-
-task.spawn(function()
-    while task.wait(1) do local data = getDebugData(); playerLabel:SetText("Players: " .. data.Players); pingLabel:SetText("Ping: " .. data.Ping); clientFpsLabel:SetText("Client FPS: " .. data.ClientFPS); serverFpsLabel:SetText("Server FPS: " .. data.ServerFPS); locationLabel:SetText("Server Region: " .. data.Location); uptimeLabel:SetText("Server Uptime: " .. data.Uptime) end
-end)
-
-local DebugToolsGroup = Tabs.Debug:AddRightGroupbox("Developer Utilities")
-DebugToolsGroup:AddToggle("AutoLogAttributesToggle", { Text = "Log Select Attributes (Every 10s)", Default = false, Callback = function(Value) logToggleActive = Value if Value then Library:Notify("Auto Select attribute logging started (10s interval).", 3); task.spawn(function() while logToggleActive do logSelectAttributes(); task.wait(10) end end) else Library:Notify("Auto Select attribute logging stopped.", 3) end end })
-DebugToolsGroup:AddButton({ Text = "Log Select Attributes (Once)", Func = function() logSelectAttributes(); Library:Notify("Logged Select attributes to file/console.", 3) end })
-DebugToolsGroup:AddButton({ Text = "Execute Remote Spy (Cobalt)", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/lesingee/cobalt/refs/heads/main/loader.lua"))() end); Library:Notify("Executed Cobalt Remote Spy.", 3) end })
-DebugToolsGroup:AddButton({ Text = "Execute Dex (Dex++)", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/Babyhamsta/RBLX_Scripts/main/Universal/BypassedDarkDexV3.lua"))() end); Library:Notify("Executed Dex++ Explorer.", 3) end })
-DebugToolsGroup:AddButton({ Text = "Execute Infinite Yield", Func = function() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))() end); Library:Notify("Executed Infinite Yield.", 3) end })
-
-local memoryLabel = DebugToolsGroup:AddLabel("Memory Usage: Measuring...")
-local instancesLabel = DebugToolsGroup:AddLabel("Total Instances: Measuring...")
-task.spawn(function()
-    while task.wait(2) do
-        pcall(function()
-            local memMB = math.round(collectgarbage("count") / 1024)
-            memoryLabel:SetText("Memory (Lua): " .. tostring(memMB) .. " MB")
-            instancesLabel:SetText("Total Instances: " .. tostring(#game:GetDescendants()))
-        end)
-    end
-end)
-
-local consoleLoggingActive = false
-local consoleConnection = nil
-DebugToolsGroup:AddToggle("ConsoleLoggerToggle", { Text = "Log Remote / Error Output", Default = false, Callback = function(Value) consoleLoggingActive = Value if Value then consoleConnection = LogService.MessageOut:Connect(function(msg, msgType) if consoleLoggingActive then print("[NULL_DEBUG_LOG]: " .. msg) end end); Library:Notify("Console output logging enabled.", 3) else if consoleConnection then consoleConnection:Disconnect(); consoleConnection = nil end Library:Notify("Console output logging disabled.", 3) end end })
-
-local SystemGroup = Tabs.Debug:AddRightGroupbox("System")
-SystemGroup:AddButton({
-    Text = "Unload GUI",
+--------------------------------------------------------------------
+-- Debug Tab Population
+--------------------------------------------------------------------
+local DebugGroup = Tabs.Debug:AddLeftGroupbox("Debug Actions")
+DebugGroup:AddButton({
+    Text = "Log Select Attributes",
     Func = function()
-        logToggleActive = false; stopAllCollection()
-        for _, conn in pairs(connections) do if conn then conn:Disconnect() end end
-        for _, guard in pairs(upgradeValueGuards) do if guard then guard:Disconnect() end end
-        if consoleConnection then consoleConnection:Disconnect() end
-        if persistentRespawnConnection then persistentRespawnConnection:Disconnect() end
-        
-        if protectionFolder then protectionFolder:Destroy() end
-        table.clear(activeTripmineProtections); table.clear(activeBulletProtections)
-        if velocityPart and velocityPart.Parent then velocityPart:Destroy() end
-
-        local upgradesFolder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
-        if upgradesFolder then
-            for name, _ in pairs(activeUpgrades) do
-                local intv = upgradesFolder:FindFirstChild(name)
-                if intv then intv:Destroy() end
-                if events and events:FindFirstChild("UpgradesChanged") then pcall(function() if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, { [name] = 0 }) end if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({ [name] = 0 }) end end) end
-            end
-        end
-        table.clear(activeUpgrades)
-        Library:Unload()
+        logSelectAttributes()
+        Library:Notify("Logged board attributes to console/file.", 3)
     end
 })
 
-local SettingsGroup = Tabs.Settings:AddLeftGroupbox("GUI Settings")
-SettingsGroup:AddToggle("ExampleToggle", { Text = "TBA", Default = false, Callback = function(Value) end })
-SettingsGroup:AddDropdown("ExampleDropdown", { Text = "Choose Mode", Values = {"Mode A", "Mode B", "Mode C"}, Default = 1, Callback = function(Value) end })
-SettingsGroup:AddKeyPicker("ExampleKeybind", { Default = "K", Text = "Toggle Menu Keybind", Callback = function(Value) end })
+DebugGroup:AddButton({
+    Text = "Unload GUI",
+    Func = function()
+        if _G.NullGui_Cleanup and type(_G.NullGui_Cleanup) == "function" then
+            pcall(_G.NullGui_Cleanup)
+        end
+        if velocityPart and velocityPart.Parent then
+            pcall(function() velocityPart:Destroy() end)
+        end
+        if protectionFolder and protectionFolder.Parent then
+            pcall(function() protectionFolder:Destroy() end)
+        end
+        if Library and type(Library.Unload) == "function" then
+            pcall(function() Library:Unload() end)
+        end
+    end
+})
 
+local DebugInfoGroup = Tabs.Debug:AddRightGroupbox("Session State")
+local levelLabel = DebugInfoGroup:AddLabel("Current Observed Level: N/A")
+local connLabel = DebugInfoGroup:AddLabel("Active Connections: " .. tostring(#scriptConnections))
+
+task.spawn(function()
+    while task.wait(1) do
+        if levelLabel then
+            levelLabel:SetText("Current Observed Level: " .. tostring(currentObservedLevel or "N/A"))
+        end
+        if connLabel then
+            connLabel:SetText("Active Connections: " .. tostring(#scriptConnections))
+        end
+    end
+end)
+
+--------------------------------------------------------------------
+-- Settings Tab Setup (ThemeManager & SaveManager Integration)
+--------------------------------------------------------------------
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
+
+ThemeManager:SetFolder("NullGui")
+SaveManager:SetFolder("NullGui")
+
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({"ExampleKeybind"})
-ThemeManager:SetFolder("NullGuiConfig")
-SaveManager:SetFolder("NullGuiConfig/" .. tostring(PlaceId))
+SaveManager:SetIgnoreIndexes({})
+
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings)
+
 SaveManager:LoadAutoloadConfig()
