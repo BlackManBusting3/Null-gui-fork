@@ -381,7 +381,7 @@ local function teleportToNearestPylon()
 
     if closest then
         interactWithPylon(closest)
-        if Library and Library.Notify then Library:Notify("Teleported to Pylon: " .. closest.Name, 3) end
+        if Library and Library.Notify then Library:Notify("Teleporting to Pylons: " .. closest.Name, 3) end
         return true
     end
     return false
