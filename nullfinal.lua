@@ -196,6 +196,8 @@ local Settings = {
     AutoStartCollecting = false,
     AutoFarmBeta = false,
     AutoPylon = false,
+    AutoAltar = false,
+    WhitelistedAltars = {},
     TargetLevel = nil,
     EnemiesWhitelist = {},
     CursesWhitelist = {},
@@ -204,6 +206,7 @@ local Settings = {
 
 local currentObservedLevel = nil
 local targetVoidProcessing = false
+local isProcessingAltar = false
 
 local tweening = false
 local currentTween = nil
@@ -271,6 +274,7 @@ local updateActiveUpgradesDisplay = function() end
 local applyUpgradeValue = function() end
 local upgradeLabels = {}
 local collectGiftsEngine = function() end
+local stopAllCollection = function() end
 
 --------------------------------------------------------------------
 -- Helper functions for accessing UI Toggles / Options safely
@@ -412,6 +416,124 @@ end)
 table.insert(scriptConnections, connections["PylonAddedListener"])
 
 --------------------------------------------------------------------
+-- Auto Altar Logic Core (Includes AltarModel Attributes Scanning)
+--------------------------------------------------------------------
+local function executeAutoAltar()
+    if not Settings.AutoAltar or isProcessingAltar then return end
+
+    local hasWhitelist = false
+    for _, enabled in pairs(Settings.WhitelistedAltars) do
+        if enabled then hasWhitelist = true; break end
+    end
+    if not hasWhitelist then return end
+
+    local currentRooms = workspace:FindFirstChild("CurrentRooms")
+    if not currentRooms then return end
+
+    isProcessingAltar = true
+
+    local targetPart = nil
+    local targetPrompt = nil
+    local validAltarNames = {"Purgatory", "Echo", "Chance", "Purification", "Revive", "Protection"}
+
+    for _, room in ipairs(currentRooms:GetChildren()) do
+        -- Scan room descendants for AltarModel or Altar parts
+        for _, desc in ipairs(room:GetDescendants()) do
+            if desc.Name == "AltarModel" or (desc.Parent and desc.Parent.Name == "AltarModel") or desc.Name:lower():find("altar") then
+                local matchedAltarName = nil
+
+                -- Check all attributes on the model/part
+                local attributes = desc:GetAttributes()
+                for attrName, attrValue in pairs(attributes) do
+                    local strValue = tostring(attrValue):lower()
+                    local strName = tostring(attrName):lower()
+                    for _, altarName in ipairs(validAltarNames) do
+                        if strValue == altarName:lower() or strName == altarName:lower() then
+                            matchedAltarName = altarName
+                            break
+                        end
+                    end
+                    if matchedAltarName then break end
+                end
+
+                -- Fallback string match on Object/Action Text or Part Name
+                if not matchedAltarName then
+                    local prompt = desc:FindFirstChildWhichIsA("ProximityPrompt", true)
+                    local textToSearch = (desc.Name .. " " .. (desc.Parent and desc.Parent.Name or "") .. " " .. (prompt and (prompt.ObjectText .. " " .. prompt.ActionText) or "")):lower()
+                    for _, altarName in ipairs(validAltarNames) do
+                        if textToSearch:find(altarName:lower()) then
+                            matchedAltarName = altarName
+                            break
+                        end
+                    end
+                end
+
+                -- Verify if the matched altar is whitelisted in Settings
+                if matchedAltarName and Settings.WhitelistedAltars[matchedAltarName] then
+                    targetPrompt = desc:FindFirstChildWhichIsA("ProximityPrompt", true) or (desc.Parent and desc.Parent:FindFirstChildWhichIsA("ProximityPrompt", true))
+                    targetPart = desc:IsA("BasePart") and desc or desc:FindFirstChildWhichIsA("BasePart", true) or (desc.IsA and desc:IsA("Model") and desc.PrimaryPart)
+                    if targetPart then break end
+                end
+            end
+        end
+        if targetPart then break end
+    end
+
+    if targetPart then
+        local char = getChar(plr)
+        local root = getRoot(char)
+        if root then
+            -- 1. Pause existing gift collection
+            local wasCollectingNormal = Settings.CollectNormal
+            local wasCollectingGolden = Settings.CollectGolden
+            if wasCollectingNormal or wasCollectingGolden then
+                stopAllCollection()
+                task.wait(0.2) -- Allow current tweens to cancel safely
+            end
+
+            -- 2. Teleport to Altar part
+            root.CFrame = targetPart.CFrame + Vector3.new(0, 3, 0)
+            
+            -- 3. Wait 2 seconds
+            task.wait(2)
+
+            -- 4. Fire Prompt or Press F Key
+            if targetPrompt then
+                pcall(function()
+                    if fireproximityprompt then
+                        fireproximityprompt(targetPrompt)
+                    else
+                        targetPrompt:InputHoldBegin()
+                        task.wait(targetPrompt.HoldDuration)
+                        targetPrompt:InputHoldEnd()
+                    end
+                end)
+            else
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+                task.wait(0.05)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+            end
+
+            -- 5. Resume Gift Collection
+            task.wait(0.5)
+            if wasCollectingNormal then
+                Settings.CollectNormal = true
+                local tgl = getToggle("CollectNormalToggle")
+                if tgl then tgl:SetValue(true) end
+                task.defer(function() collectGiftsEngine(false) end)
+            elseif wasCollectingGolden then
+                Settings.CollectGolden = true
+                local tgl = getToggle("CollectGoldenToggle")
+                if tgl then tgl:SetValue(true) end
+                task.defer(function() collectGiftsEngine(true) end)
+            end
+        end
+    end
+
+    isProcessingAltar = false
+end
+
+--------------------------------------------------------------------
 -- Console Log Listener & Level Tracking
 --------------------------------------------------------------------
 connections["LevelLogListener"] = LogService.MessageOut:Connect(function(msg, msgType)
@@ -438,7 +560,7 @@ local function executeVoidKill()
 end
 
 --------------------------------------------------------------------
--- Sound Listener for NewLevel Sound Void Trigger
+-- Sound Listener for NewLevel Sound Trigger (Void & Altar)
 --------------------------------------------------------------------
 task.spawn(function()
     local sfxFolder = SoundService:WaitForChild("SFXFolder", 3) or SoundService:FindFirstChild("SFXFolder")
@@ -446,6 +568,12 @@ task.spawn(function()
 
     if newLevelSound and newLevelSound:IsA("Sound") then
         connections["NewLevelVoidSoundConn"] = newLevelSound.Played:Connect(function()
+            -- Auto Altar Trigger
+            if Settings.AutoAltar then
+                task.spawn(executeAutoAltar)
+            end
+            
+            -- Void Kill Trigger
             if not Settings.TargetLevel or type(Settings.TargetLevel) ~= "number" or Settings.TargetLevel <= 0 or targetVoidProcessing then return end
 
             if currentObservedLevel and currentObservedLevel >= Settings.TargetLevel then
@@ -1165,7 +1293,7 @@ local function handleSpawnNavigation()
     return false
 end
 
-local function stopAllCollection()
+stopAllCollection = function()
     tweening = false
     Settings.CollectNormal = false
     Settings.CollectGolden = false
@@ -1635,6 +1763,30 @@ if isSupportedPlace then
                 teleportToNearestPylon()
             else
                 Library:Notify("Auto Teleport to Pylon Disabled.", 2)
+            end
+        end
+    })
+
+    FarmGroup:AddDropdown("AutoAltarWhitelistDropdown", {
+        Values = {"Purgatory", "Chance", "Purification", "Protection", "Revive", "Echo"},
+        Multi = true,
+        Text = "Auto Altar Whitelist",
+        Tooltip = "Select which altars to automatically use.",
+        Callback = function(Value)
+            Settings.WhitelistedAltars = Value
+        end
+    })
+
+    FarmGroup:AddToggle("AutoAltarToggle", {
+        Text = "Auto Altar",
+        Default = Settings.AutoAltar,
+        Tooltip = "Teleports to whitelisted altars on NewLevel sound, pauses auto collect.",
+        Callback = function(Value)
+            Settings.AutoAltar = Value
+            if Value then
+                Library:Notify("Auto Altar Enabled.", 2)
+            else
+                Library:Notify("Auto Altar Disabled.", 2)
             end
         end
     })
