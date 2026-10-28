@@ -1927,8 +1927,10 @@ if isSupportedPlace then
     MapProtectionGroup:AddToggle("Tripmine_Protection", { Text = "Tripmine Safe Sphere Protection", Default = pt, Callback = function(Value) pt = Value; if not Value then for _, d in pairs(activeTripmineProtections) do if d.sphere then d.sphere:Destroy() end end table.clear(activeTripmineProtections) end end })
 
     local TilesGroup = Tabs.Map:AddRightGroupbox("tiles")
-    TilesGroup:AddToggle("AntiFleshIceTiles", { Text = "Anti flesh tiles/ ice tiles (tile connection)", Default = false, Callback = function(Value) antiFleshTilesEnabled = Value; applyTileConnections() end })
+    TilesGroup:AddToggle("AntiFleshIceTiles", { Text = "Anti flesh tiles ", Default = false, Callback = function(Value) antiFleshTilesEnabled = Value; applyTileConnections() end })
     TilesGroup:AddToggle("PersistentTileConnections", { Text = "Persistent tile connections", Default = false, Callback = function(Value) persistentTileConnections = Value; if Value then if not persistentRespawnConnection then persistentRespawnConnection = plr.CharacterAdded:Connect(function() task.wait(1); if persistentTileConnections and antiFleshTilesEnabled then applyTileConnections() end end) end else if persistentRespawnConnection then persistentRespawnConnection:Disconnect(); persistentRespawnConnection = nil end end end })
+    TilesGroup:AddToggle("AntiIceTiles", { Text = "Anti ice tiles", Default = false, Callback = function(Value) antiFleshTilesEnabled = Value; applyTileConnections() end })
+
 
     local ExtraDisablesGroup = Tabs.Map:AddRightGroupbox("Null GUI Extra Disables")
     ExtraDisablesGroup:AddToggle("DisableSeaMines", { Text = "Disable Sea Mines", Default = false, Callback = function(Value) disableSeaMines = Value end })
