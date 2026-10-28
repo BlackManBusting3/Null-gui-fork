@@ -1480,7 +1480,7 @@ if isSupportedPlace then
     GiftGroup:AddToggle("AutoStartCollectingToggle", {
         Text = "<font color='#00FFCC'>Auto start collecting</font>",
         Default = Settings.AutoStartCollecting,
-        Tooltip = "Automatically starts/restarts normal gift collection when SoundService.SFXFolder.NewLevel plays.",
+        Tooltip = "Automatically starts/restarts normal gift collection when a new level starts.",
         Callback = function(Value)
             Settings.AutoStartCollecting = Value
             if Value then
@@ -1495,7 +1495,7 @@ if isSupportedPlace then
                             if normalTgl then normalTgl:SetValue(true) end
                             if tweening then stopAllCollection(); task.wait(0.1) end
                             collectGiftsEngine(false)
-                            if notifOn then notif("NewLevel sound detected. Auto-started normal gift collection.", "Collection System") end
+                            if notifOn then notif("NewLevel detected. Auto-started normal gift collection.", "Normal and Golden Gifts") end
                         end
                     end)
                     table.insert(scriptConnections, connections["AutoStartCollectingConn"])
@@ -1548,7 +1548,7 @@ if isSupportedPlace then
     GiftGroup:AddToggle("LegitCollectionToggle", {
         Text = "<font color='#FF4444'>Legit collection (slow)</font>",
         Default = Settings.LegitCollection,
-        Tooltip = "Uses PathfindingService to naturally walk to gifts instead of teleporting.",
+        Tooltip = "Uses PathfindingService to walk to gifts instead of teleporting.",
         Callback = function(Value)
             Settings.LegitCollection = Value
             if Value then Library:Notify("Legit Pathfinding Mode Enabled.", 2) end
@@ -1618,7 +1618,7 @@ if isSupportedPlace then
     })
 
     FarmGroup:AddButton({
-        Text = "Teleport to Pylon",
+        Text = "Teleport to Pylon (Buggy) ",
         Func = function()
             teleportToNearestPylon()
         end
@@ -1640,20 +1640,20 @@ if isSupportedPlace then
     })
 
     FarmGroup:AddInput("TargetLevelVoidInput", {
-        Text = "Auto Void at Level",
+        Text = "Auto Reset at Level",
         Default = "",
         Numeric = true,
         Finished = false,
         Placeholder = "Target Level (e.g. 2)...",
-        Tooltip = "Input player level to automatically teleport character into the void upon reaching it.",
+        Tooltip = "Input player level to automatically Reset the run upon reaching it.",
         Callback = function(Value)
             local num = tonumber(Value)
             if num and num > 0 then
                 Settings.TargetLevel = num
-                Library:Notify("Auto Void set for Level " .. tostring(num), 2)
+                Library:Notify("Auto Restart set to level: " .. tostring(num), 2)
             else
                 Settings.TargetLevel = nil
-                Library:Notify("Auto Void Level disabled.", 2)
+                Library:Notify("Auto Restart Level disabled.", 2)
             end
         end
     })
@@ -1704,7 +1704,7 @@ if isSupportedPlace then
     PlayerGroup:AddToggle("DestroyRazorbloomToggle", {
         Text = "<font color='#FF6666'>Destroy Razorbloom (VISIBLE TO OTHERS)</font>",
         Default = nrb,
-        Tooltip = "Automatically destroys Razorbloom objects from your character when they appear.",
+        Tooltip = "destroys Razorbloom on your client, will still be visible for anyone else .",
         Callback = function(Value)
             nrb = Value
             if Value then
@@ -1722,7 +1722,7 @@ if isSupportedPlace then
         Min = 0,
         Max = 10,
         Rounding = 0,
-        Tooltip = "Adds 30 Magnet upgrades per slider tick (0 sets magnet upgrade to 1).",
+        Tooltip = "Adds 30 Magnet upgrades per slider number. works as gift collection range.",
         Callback = function(Value)
             local magnetAmount
             if Value == 0 then
@@ -1735,7 +1735,7 @@ if isSupportedPlace then
     })
 
     -- Enemies Tab
-    local EnemyControlGroup = Tabs.Enemies:AddLeftGroupbox("AI & Entity Disabler")
+    local EnemyControlGroup = Tabs.Enemies:AddLeftGroupbox("Entity Disabler")
 
     EnemyControlGroup:AddToggle("DisableAllEnemies", {
         Text = "Disable All Enemy AI", Default = false,
@@ -1749,10 +1749,10 @@ if isSupportedPlace then
                     end)
                     table.insert(scriptConnections, connections["DisableEnemies"])
                 end
-                Library:Notify("Workspace Enemy AI disabled.", 3)
+                Library:Notify("Enemy AI disabled.", 3)
             else
                 if connections["DisableEnemies"] then connections["DisableEnemies"]:Disconnect(); connections["DisableEnemies"] = nil end
-                Library:Notify("Workspace Enemy AI re-enabled.", 3)
+                Library:Notify("Enemy AI re-enabled.", 3)
             end
         end
     })
@@ -1794,7 +1794,7 @@ if isSupportedPlace then
                     end)
                     table.insert(scriptConnections, connections["DeleteEnemies"])
                 end
-                Library:Notify("Auto-delete all enemies enabled (Guardian Protection active).", 3)
+                Library:Notify("Auto-delete all enemies enabled (Guardian Protection/Immunity active).", 3)
             else
                 if connections["DeleteEnemies"] then connections["DeleteEnemies"]:Disconnect(); connections["DeleteEnemies"] = nil end
                 Library:Notify("Auto-delete all enemies disabled.", 3)
@@ -1838,7 +1838,7 @@ if isSupportedPlace then
         end
     end)
 
-    local DetailedEnemyGroup = Tabs.Enemies:AddLeftGroupbox("Granular Enemy Options")
+    local DetailedEnemyGroup = Tabs.Enemies:AddLeftGroupbox("Manage Enemies")
 
     task.spawn(function()
         while task.wait(1) do
@@ -1856,7 +1856,7 @@ if isSupportedPlace then
             group:AddToggle(name.."_Disable", { Text = "Auto Disable", Default = auto_disable[name], Callback = function(v) auto_disable[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
         end
         if auto_break[name] ~= nil then 
-            group:AddToggle(name.."_Break", { Text = "Auto Break AI", Default = auto_break[name], Callback = function(v) auto_break[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
+            group:AddToggle(name.."_Break", { Text = "Auto Break AI !! BUGGY !! ", Default = auto_break[name], Callback = function(v) auto_break[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
         end
         if auto_destroy[name] ~= nil then 
             group:AddToggle(name.."_Destroy", { Text = "Auto Destroy", Default = auto_destroy[name], Callback = function(v) auto_destroy[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
@@ -2099,10 +2099,10 @@ DevelopersGroup:AddLabel("<font color='#AA55FF'>Java (.html4)</font> Main Develo
 --------------------------------------------------------------------
 local DebugGroup = Tabs.Debug:AddLeftGroupbox("Debug Actions")
 DebugGroup:AddButton({
-    Text = "Log Select Attributes",
+    Text = "Log Selection Attributes",
     Func = function()
         logSelectAttributes()
-        Library:Notify("Logged board attributes to console/file.", 3)
+        Library:Notify("Logged Pedestals attributes to console/file.", 3)
     end
 })
 
@@ -2124,8 +2124,8 @@ DebugGroup:AddButton({
     end
 })
 
-local DebugInfoGroup = Tabs.Debug:AddRightGroupbox("Session State")
-local levelLabel = DebugInfoGroup:AddLabel("Current Observed Level: N/A")
+local DebugInfoGroup = Tabs.Debug:AddRightGroupbox("Session State - Nullscape")
+local levelLabel = DebugInfoGroup:AddLabel("Current Observed Level: Unknown )
 local connLabel = DebugInfoGroup:AddLabel("Active Connections: " .. tostring(#scriptConnections))
 
 task.spawn(function()
