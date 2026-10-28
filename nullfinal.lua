@@ -110,7 +110,7 @@ local UpgradesList = {
     "MoreAltars", "NinjaBelt", "LargerGrapplePoints", "SportShoes", "GiftMagnet",
     "SubspacialBarrier", "MatrixTetrahedron", "SharkTail", "PanicNecklace", "AltarOfVoid",
     "MiniatureHourglass", "GiftIdol", "Adrenaline", "TheOrb", "RealWings", "GraceWings",
-    "RadarPlayer", "RadarInstruments", "HighlightTripmines"
+    "RadarPlayer", "RadarInstruments", "HighlightTripmines", "Shield", "SprigShoes", 
 }
 
 local CursesList = {
