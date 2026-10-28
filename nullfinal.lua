@@ -1516,7 +1516,7 @@ local function processAntiVoid()
             local gift = getClosestGift(targetPool)
             if gift then
                 local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart")
-                if part then root.CFrame = part.CFrame + Vector3.new(0, 5, 0) end
+                if part then root.CFrame = part.CFrame + Vector3.new(0, 10, 0) end
             else
                 handleSpawnNavigation()
             end
