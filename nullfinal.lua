@@ -126,6 +126,10 @@ local EnemiesList = {
     "Operator", "Telefragger", "Guardian", "Kolona", "Voidbreaker", "Cadence", "ShadowBaby"
 }
 
+local DelusionList = {
+    "DelusionPlaceholder", "Hope"
+}
+
 --------------------------------------------------------------------
 -- Game References
 --------------------------------------------------------------------
