@@ -303,7 +303,7 @@ local function destroyRazorbloom()
     if rb then
         rb:Destroy()
         if notifOn then
-            notif("Destroyed Razorbloom from character.", "Razorbloom System")
+            notif("Destroyed Razorbloom from character.", "Razorbloom Deleted")
         end
     end
 end
