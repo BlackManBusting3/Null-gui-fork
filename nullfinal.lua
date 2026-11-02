@@ -35,6 +35,7 @@ local TextService = game:GetService("TextService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local PathfindingService = game:GetService("PathfindingService")
 local SoundService = game:GetService("SoundService")
+local NightmareStats = game:GetService("NightMareModeStats")
 
 local PlaceId, JobId = game.PlaceId, game.JobId 
 local plr = Players.LocalPlayer
