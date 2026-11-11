@@ -1,5 +1,5 @@
 -- =====================================================================
--- 1 CLEANUP
+-- CLEANUP
 -- =====================================================================
 if _G.NullGui_Cleanup and type(_G.NullGui_Cleanup) == "function" then
     pcall(_G.NullGui_Cleanup)
