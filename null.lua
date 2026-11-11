@@ -4,13 +4,10 @@
 if _G.NullGui_Cleanup and type(_G.NullGui_Cleanup) == "function" then
     pcall(_G.NullGui_Cleanup)
 end
-
 local scriptConnections = {}
 _G.NullGui_Cleanup = function()
     for _, conn in pairs(scriptConnections) do
-        if conn and conn.Connected then
-            conn:Disconnect()
-        end
+        if conn and conn.Connected then conn:Disconnect() end
     end
     table.clear(scriptConnections)
 end
@@ -43,40 +40,30 @@ local gameName = "Unknown Game"
 task.spawn(function()
     pcall(function()
         local productInfo = MarketplaceService:GetProductInfoAsync(PlaceId)
-        if productInfo and productInfo.Name then
-            gameName = productInfo.Name
-        end
+        if productInfo and productInfo.Name then gameName = productInfo.Name end
     end)
 end)
 
 local isSupportedPlace = true
-
 local fSignal = firesignal or fire_signal or fireSignal
 if not fSignal and getgenv then
     fSignal = getgenv().firesignal or getgenv().fire_signal or getgenv().fireSig
 end
 
 -- =====================================================================
--- IMMUNITY HOOK (unchanged)
+-- IMMUNITY HOOK
 -- =====================================================================
 local guardianImmunity = false
 local voidboundGuardianImmunity = false
-
 task.spawn(function()
-    if not game:IsLoaded() then
-        game.Loaded:Wait()
-    end
-
+    if not game:IsLoaded() then game.Loaded:Wait() end
     local eventsFolder = ReplicatedStorage:WaitForChild("Events", 5)
     local diedEvent = eventsFolder and eventsFolder:WaitForChild("Died", 5)
-
     if diedEvent and getrawmetatable and setreadonly then
         local wrapFn = (typeof(newcclosure) == "function" and newcclosure) or function(f) return f end
         local mt = getrawmetatable(game)
         local oldNamecall = mt.__namecall
-
         setreadonly(mt, false)
-
         mt.__namecall = wrapFn(function(self, ...)
             if self == diedEvent and getnamecallmethod() == "FireServer" then
                 local cause = select(1, ...)
@@ -85,13 +72,12 @@ task.spawn(function()
             end
             return oldNamecall(self, ...)
         end)
-
         setreadonly(mt, true)
     end
 end)
 
 -- =====================================================================
--- WHITELIST DATA
+-- LISTS
 -- =====================================================================
 local UpgradesList = {
     "BusinessLicense", "Paycheck", "Shield", "DoubleJump", "HighlightGifts", "Medal",
@@ -133,25 +119,22 @@ local beacons = workspace:FindFirstChild("Beacons")
 local destroyFolder = workspace:FindFirstChild("DestroyFolder")
 local counters = ReplicatedStorage:FindFirstChild("GiftCounters")
 local magnet = events and events:FindFirstChild("MovementGiftMagnet")
-
 local dynamicItems = workspace:FindFirstChild("Item_Pools")
 local tripmines = dynamicItems and dynamicItems:FindFirstChild("Tripmine")
 local goldentripmines = dynamicItems and dynamicItems:FindFirstChild("GoldTripmines")
 local bullets = dynamicItems and dynamicItems:FindFirstChild("Bullet")
 
 -- =====================================================================
--- VISUALIZERS / PROTECTION SPHERES
+-- VISUALS
 -- =====================================================================
 local activeTripmineProtections = {}
 local activeBulletProtections = {}
-
 local protectionFolder = workspace:FindFirstChild("NullGui_ProtectionSpheres")
 if not protectionFolder then
     protectionFolder = Instance.new("Folder")
     protectionFolder.Name = "NullGui_ProtectionSpheres"
     protectionFolder.Parent = workspace
 end
-
 local velocityPart = Instance.new("Part")
 velocityPart.Name = "VelocityVisualizer"
 velocityPart.Anchored = true
@@ -161,7 +144,6 @@ velocityPart.Material = Enum.Material.Air
 velocityPart.Color = Color3.new(1, 1, 1)
 velocityPart.Size = Vector3.new(0.1, 0.1, 1)
 velocityPart.Parent = workspace
-
 local vpBox = Instance.new("BoxHandleAdornment")
 vpBox.Color3 = Color3.new(1, 1, 1)
 vpBox.AlwaysOnTop = true
@@ -170,56 +152,117 @@ vpBox.Adornee = velocityPart
 vpBox.Parent = velocityPart
 
 -- =====================================================================
--- SETTINGS & STATE
+-- SETTINGS
 -- =====================================================================
 local Settings = {
-    CollectNormal = false,
-    CollectGolden = false,
-    LegitCollection = false,
-    LegitSpeed = 16,
-    InstantTeleport = true,
-    TweenSpeed = 60,
-    DelayBetweenGifts = 0.05,
-    AutoBeacon = false,
-    AutoStartCollecting = false,
-    AutoFarmBeta = false,
-    AutoPylon = false,
-    TargetLevel = nil,
-    EnemiesWhitelist = {},
-    CursesWhitelist = {},
-    UpgradesWhitelist = {}
+    CollectNormal = false, CollectGolden = false, LegitCollection = false,
+    LegitSpeed = 16, InstantTeleport = true, TweenSpeed = 60, DelayBetweenGifts = 0.05,
+    AutoBeacon = false, AutoStartCollecting = false, AutoFarmBeta = false, AutoPylon = false,
+    TargetLevel = nil, EnemiesWhitelist = {}, CursesWhitelist = {}, UpgradesWhitelist = {}
 }
-
 local currentObservedLevel = nil
 local targetVoidProcessing = false
 
 -- =====================================================================
--- DISCORD WEBHOOK SYSTEM (NEW)
+-- DISCORD WEBHOOK SYSTEM  (FIXED + AUTO-SEND + SESSION INFO)
 -- =====================================================================
 local Webhook = {
     URL = "",
     LevelEnabled = false,
     DeathEnabled = false,
+    AutoEnabled = false,
+    AutoIntervalMinutes = 5,
     LastSentLevel = nil,
     LastLevelSendTime = 0,
     LastDeathSendTime = 0,
+    LastAutoSendTime = 0,
+    LevelsGained = 0,
+    StartTime = os.time(),
+    LastResponse = "Idle",
 }
 
--- Multi-executor HTTP POST (request / syn.request / http.request / http_request)
-local function httpPost(url, body)
-    local headers = {["Content-Type"] = "application/json"}
-    local requestFn
-    pcall(function() requestFn = request end)
-    if not requestFn then pcall(function() requestFn = syn.request end) end
-    if not requestFn then pcall(function() requestFn = http and http.request end) end
-    if not requestFn then pcall(function() requestFn = http_request end) end
-    if not requestFn then return false, "No HTTP request function available in this executor" end
-
-    local ok, res = pcall(function()
-        return requestFn({Url = url, Method = "POST", Headers = headers, Body = body})
+local function getExecutorName()
+    local name = "Unknown"
+    pcall(function()
+        if type(identifyexecutor) == "function" then
+            local ok, res = pcall(identifyexecutor)
+            if ok and res and res ~= "" then name = tostring(res); return end
+        end
+        if type(getexecutorname) == "function" then
+            local ok, res = pcall(getexecutorname)
+            if ok and res and res ~= "" then name = tostring(res); return end
+        end
+        if syn and type(syn.getexecutorname) == "function" then
+            local ok, res = pcall(syn.getexecutorname)
+            if ok and res and res ~= "" then name = tostring(res); return end
+        end
+        if getgenv then
+            local g = getgenv()
+            if g.ScriptWare then name = "ScriptWare"
+            elseif g.Krnl then name = "Krnl"
+            elseif g.Fluxus then name = "Fluxus" end
+        end
     end)
-    if ok then return true, res end
-    return false, tostring(res)
+    return name
+end
+
+local function getTimestamp()
+    local ok, res = pcall(function() return DateTime.now():ToIsoDate() end)
+    if ok and res then return res end
+    return os.date("!%Y-%m-%dT%H:%M:%SZ")
+end
+
+local function getSessionUptime()
+    local secs = os.time() - Webhook.StartTime
+    local mins = math.floor(secs / 60)
+    local hours = math.floor(mins / 60)
+    if hours > 0 then return string.format("%dh %dm", hours, mins % 60) end
+    return string.format("%dm %ds", mins, secs % 60)
+end
+
+-- Robust HTTP POST — checks HTTP status code and surfaces errors
+local function httpPost(url, body)
+    url = tostring(url or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if url == "" then return false, "URL is empty" end
+
+    local payload = {
+        Url = url,
+        Method = "POST",
+        Headers = {["Content-Type"] = "application/json"},
+        Body = body,
+    }
+
+    local fns = {}
+    pcall(function() if type(request) == "function" then fns["request"] = request end end)
+    pcall(function() if syn and type(syn.request) == "function" then fns["syn.request"] = syn.request end end)
+    pcall(function() if http and type(http.request) == "function" then fns["http.request"] = http.request end end)
+    pcall(function() if type(http_request) == "function" then fns["http_request"] = http_request end end)
+
+    if not next(fns) then
+        return false, "No HTTP function found (request / syn.request / http.request / http_request all nil)"
+    end
+
+    local errors = {}
+    for name, fn in pairs(fns) do
+        local ok, res = pcall(fn, payload)
+        if ok and type(res) == "table" then
+            local status = res.StatusCode or res.Status or res.status or res.statusCode or 0
+            if status >= 200 and status < 300 then
+                return true, "HTTP " .. tostring(status) .. " via " .. name
+            else
+                local b = tostring(res.Body or res.body or res.Response or "")
+                if #b > 200 then b = b:sub(1, 200) .. "..." end
+                table.insert(errors, string.format("%s → HTTP %s %s", name, tostring(status), b))
+            end
+        elseif ok then
+            return true, "OK via " .. name .. " (no status reported)"
+        else
+            table.insert(errors, name .. " → " .. tostring(res))
+        end
+    end
+
+    local msg = table.concat(errors, " | ")
+    return false, msg ~= "" and msg or "All HTTP methods failed"
 end
 
 local function getActiveEnemiesList()
@@ -248,9 +291,7 @@ end
 local function getActiveUpgradesList()
     local list = {}
     for name, val in pairs(activeUpgrades) do
-        if val and val > 0 then
-            table.insert(list, string.format("%s (%d)", name, val))
-        end
+        if val and val > 0 then table.insert(list, string.format("%s (%d)", name, val)) end
     end
     return list
 end
@@ -262,62 +303,108 @@ local function buildWebhookFields()
     local upgradesText = #upgradeList > 0 and table.concat(upgradeList, "\n") or "None"
     if #enemiesText > 1000 then enemiesText = enemiesText:sub(1, 980) .. "\n... (truncated)" end
     if #upgradesText > 1000 then upgradesText = upgradesText:sub(1, 980) .. "\n... (truncated)" end
+
+    local displayName = plr.DisplayName ~= plr.Name and string.format("%s (%s)", plr.Name, plr.DisplayName) or plr.Name
+    local executor = getExecutorName()
+
     return {
-        {name = "Current Level", value = tostring(currentObservedLevel or "N/A"), inline = true},
+        {name = "👤 Player", value = displayName, inline = true},
+        {name = "🛠 Executor", value = executor, inline = true},
+        {name = "📈 Current Level", value = tostring(currentObservedLevel or "N/A"), inline = true},
+        {name = "📊 Levels This Session", value = tostring(Webhook.LevelsGained), inline = true},
+        {name = "⏱ Session Uptime", value = getSessionUptime(), inline = true},
+        {name = "🌐 Game", value = string.format("%s (%d)", gameName, PlaceId), inline = true},
         {name = "Active Enemies (" .. tostring(#enemyList) .. ")", value = enemiesText, inline = false},
         {name = "Active Upgrades (" .. tostring(#upgradeList) .. ")", value = upgradesText, inline = false},
     }
 end
 
 local function isValidWebhookURL()
-    if not Webhook.URL or Webhook.URL == "" then
-        return false, "No webhook URL configured"
-    end
+    if not Webhook.URL or Webhook.URL == "" then return false, "No webhook URL configured" end
     local url = string.lower(Webhook.URL)
     if not (url:find("discord%.com") or url:find("discordapp%.com")) then
-        return false, "URL does not appear to be a Discord webhook"
+        return false, "URL is not a Discord webhook (must contain discord.com)"
     end
     if not url:find("webhooks") then
-        return false, "URL is missing the webhook path"
+        return false, "URL missing /webhooks/ path segment"
     end
     return true
 end
 
 local function dispatchWebhook(payload)
     local ok, err = isValidWebhookURL()
-    if not ok then return false, err end
+    if not ok then
+        Webhook.LastResponse = "Invalid: " .. err
+        return false, err
+    end
     local encOk, encoded = pcall(function() return HttpService:JSONEncode(payload) end)
-    if not encOk then return false, "Failed to encode payload" end
-    return httpPost(Webhook.URL, encoded)
+    if not encOk then
+        Webhook.LastResponse = "JSON encode failed"
+        return false, "Failed to encode payload: " .. tostring(encoded)
+    end
+    local success, info = httpPost(Webhook.URL, encoded)
+    Webhook.LastResponse = (success and "✅ " or "❌ ") .. tostring(info)
+    return success, info
 end
 
 local function dispatchLevelWebhook(level)
-    local embed = {
-        title = "📈 New Level Reached",
-        description = string.format("Player has advanced to **Level %d**.", level),
-        color = 0x00FF88,
-        fields = buildWebhookFields(),
-        timestamp = DateTime.now():ToIsoDate(),
-        footer = {text = "Java's Null GUI | Level Tracker"},
-    }
-    return dispatchWebhook({ username = "Null GUI", embeds = {embed} })
+    return dispatchWebhook({
+        username = "Null GUI",
+        embeds = {{
+            title = "📈 New Level Reached",
+            description = string.format("Player **%s** advanced to **Level %d**.", plr.Name, level),
+            color = 0x00FF88,
+            fields = buildWebhookFields(),
+            timestamp = getTimestamp(),
+            footer = {text = "Java's Null GUI | Level Tracker"},
+        }}
+    })
 end
 
 local function dispatchDeathWebhook()
-    local embed = {
-        title = "💀 Player Died",
-        description = "The local player has died.",
-        color = 0xFF4444,
-        fields = buildWebhookFields(),
-        timestamp = DateTime.now():ToIsoDate(),
-        footer = {text = "Java's Null GUI | Death Notifier"},
-    }
-    return dispatchWebhook({ username = "Null GUI", embeds = {embed} })
+    return dispatchWebhook({
+        username = "Null GUI",
+        embeds = {{
+            title = "💀 Player Died",
+            description = string.format("**%s** has died.", plr.Name),
+            color = 0xFF4444,
+            fields = buildWebhookFields(),
+            timestamp = getTimestamp(),
+            footer = {text = "Java's Null GUI | Death Notifier"},
+        }}
+    })
 end
+
+local function dispatchPeriodicWebhook()
+    return dispatchWebhook({
+        username = "Null GUI",
+        embeds = {{
+            title = "🔄 Session Status Update",
+            description = "Automatic periodic report from Java's Null GUI.",
+            color = 0x00AAFF,
+            fields = buildWebhookFields(),
+            timestamp = getTimestamp(),
+            footer = {text = "Java's Null GUI | Auto Report"},
+        }}
+    })
+end
+
+-- Auto-send loop
+task.spawn(function()
+    while task.wait(5) do
+        if Webhook.AutoEnabled and Webhook.URL ~= "" then
+            local elapsed = os.clock() - Webhook.LastAutoSendTime
+            if elapsed >= (Webhook.AutoIntervalMinutes * 60) then
+                Webhook.LastAutoSendTime = os.clock()
+                task.spawn(function() dispatchPeriodicWebhook() end)
+            end
+        end
+    end
+end)
 -- END WEBHOOK SYSTEM
 
 -- =====================================================================
--- MISC STATE
+-- STATE
 -- =====================================================================
 local tweening = false
 local currentTween = nil
@@ -327,84 +414,47 @@ local availableGoldenGifts = {}
 local collectionRunId = 0
 local notifOn = true
 local destroying = false
-
 local disableAllEnemies = false
 local deleteAllEnemies = false
 local disableClientEnemies = false
 local autoDestroySpawns = false
-
 local nrb = false
 local antiFleshTilesEnabled = false
 local persistentTileConnections = false
 local persistentRespawnConnection = nil
-
 local disableSeaMines = false
 local disableVoidImplosions = false
 local disableFakeBeacons = false
 local disableOblivion = false
 
-local auto_disable = {
-    Bell = false, Mart = false, Skinwalker = false, Springer = false,
-    Baby = false, Flesh = false, nilEnemy = false, nilMirage = false,
-    Telefragger = false, ShadowBaby = false, Cadence = false,
-}
-local auto_break = {
-    Bell = false, Mart = false, Skinwalker = false, Springer = false,
-    ICBM = false, Baby = false, Flesh = false, nilEnemy = false,
-    nilMirage = false, Telefragger = false, ShadowBaby = false,
-    Celestial = false, Cadence = false,
-}
-local auto_destroy = {
-    Bell = false, Mart = false, Skinwalker = false, Springer = false,
-    ICBM = false, Baby = false, Flesh = false, Operator = false,
-    Kolona = false, nilEnemy = false, nilMirage = false, Telefragger = false,
-    Sigil = false, ShadowBaby = false, Voidbreaker = false, Cadence = false,
-    Scrapmaw = false, RealityBreak = false, Celestial = false,
-}
+local auto_disable = {Bell=false,Mart=false,Skinwalker=false,Springer=false,Baby=false,Flesh=false,nilEnemy=false,nilMirage=false,Telefragger=false,ShadowBaby=false,Cadence=false}
+local auto_break = {Bell=false,Mart=false,Skinwalker=false,Springer=false,ICBM=false,Baby=false,Flesh=false,nilEnemy=false,nilMirage=false,Telefragger=false,ShadowBaby=false,Celestial=false,Cadence=false}
+local auto_destroy = {Bell=false,Mart=false,Skinwalker=false,Springer=false,ICBM=false,Baby=false,Flesh=false,Operator=false,Kolona=false,nilEnemy=false,nilMirage=false,Telefragger=false,Sigil=false,ShadowBaby=false,Voidbreaker=false,Cadence=false,Scrapmaw=false,RealityBreak=false,Celestial=false}
 
-local pt = false
-local pb = false
-local velov = false
+local pt, pb, velov = false, false, false
 local connections = {}
 local activeUpgrades = {}
 local upgradeValueGuards = {}
 local isSettingGuardValue = {}
 local blacklistedGifts = {}
-
-local antiVoidSelection = 1
-local av = false
-local lp = 500
-
+local antiVoidSelection, av, lp = 1, false, 500
 local loggedAttributes = {}
 local logToggleActive = false
 local selectionState = { failedParts = {}, rerollCount = 0 }
-
 local updateActiveUpgradesDisplay = function() end
 local applyUpgradeValue = function() end
 local upgradeLabels = {}
 local collectGiftsEngine = function() end
 
--- =====================================================================
--- HELPERS
--- =====================================================================
-local function getToggle(name)
-    return (Toggles and Toggles[name]) or (Options and Options[name])
-end
+local function getToggle(name) return (Toggles and Toggles[name]) or (Options and Options[name]) end
 local function getChar(player) return player and player.Character end
 local function getRoot(character) return character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character.PrimaryPart) end
 
--- =====================================================================
--- RAZORBLOOM
--- =====================================================================
 local function destroyRazorbloom()
     if not nrb then return end
-    local char = getChar(plr)
-    if not char then return end
+    local char = getChar(plr); if not char then return end
     local rb = char:FindFirstChild("Razorbloom")
-    if rb then
-        rb:Destroy()
-        if notifOn then notif("Destroyed Razorbloom from character.", "Razorbloom System") end
-    end
+    if rb then rb:Destroy(); if notifOn then notif("Destroyed Razorbloom from character.", "Razorbloom System") end end
 end
 
 -- =====================================================================
@@ -412,11 +462,8 @@ end
 -- =====================================================================
 local function findPylons()
     local found = {}
-    local searchContainers = {
-        workspace:FindFirstChild("Pylons"), workspace:FindFirstChild("PylonFolder"),
-        workspace:FindFirstChild("Item_Pools"), workspace
-    }
-    for _, container in ipairs(searchContainers) do
+    local list = {workspace:FindFirstChild("Pylons"), workspace:FindFirstChild("PylonFolder"), workspace:FindFirstChild("Item_Pools"), workspace}
+    for _, container in ipairs(list) do
         if container then
             for _, obj in ipairs(container:GetChildren()) do
                 if obj.Name:lower():find("pylon") then table.insert(found, obj) end
@@ -425,13 +472,11 @@ local function findPylons()
     end
     return found
 end
-
 local function interactWithPylon(pylon)
     if not pylon or not pylon.Parent then return end
     local part = pylon:IsA("BasePart") and pylon or pylon:FindFirstChildWhichIsA("BasePart") or pylon.PrimaryPart
     if not part then return end
-    local char = getChar(plr); local root = getRoot(char)
-    if root then root.CFrame = part.CFrame + Vector3.new(0, 3, 0) end
+    local root = getRoot(getChar(plr)); if root then root.CFrame = part.CFrame + Vector3.new(0, 3, 0) end
     task.wait(0.1)
     local prompt = pylon:FindFirstChildWhichIsA("ProximityPrompt", true)
     if prompt then
@@ -444,31 +489,21 @@ local function interactWithPylon(pylon)
         VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
     end
 end
-
 local function teleportToNearestPylon()
     local pylons = findPylons()
-    if #pylons == 0 then
-        if Library and Library.Notify then Library:Notify("No Pylons found in workspace.", 3) end
-        return false
-    end
-    local char = getChar(plr); local root = getRoot(char)
-    if not root then return false end
-    local closest, shortestDist = nil, math.huge
+    if #pylons == 0 then if Library and Library.Notify then Library:Notify("No Pylons found.", 3) end return false end
+    local root = getRoot(getChar(plr)); if not root then return false end
+    local closest, shortest = nil, math.huge
     for _, pylon in ipairs(pylons) do
         local part = pylon:IsA("BasePart") and pylon or pylon:FindFirstChildWhichIsA("BasePart") or pylon.PrimaryPart
         if part then
             local dist = (part.Position - root.Position).Magnitude
-            if dist < shortestDist then shortestDist = dist; closest = pylon end
+            if dist < shortest then shortest = dist; closest = pylon end
         end
     end
-    if closest then
-        interactWithPylon(closest)
-        if Library and Library.Notify then Library:Notify("Teleporting to Pylons: " .. closest.Name, 3) end
-        return true
-    end
+    if closest then interactWithPylon(closest); if Library and Library.Notify then Library:Notify("Teleporting to "..closest.Name, 3) end return true end
     return false
 end
-
 local isProcessingPylons = false
 local function processAutoPylon()
     if not Settings.AutoPylon or isProcessingPylons then return end
@@ -484,25 +519,23 @@ local function processAutoPylon()
         end)
     end
 end
-
 connections["PylonAddedListener"] = workspace.ChildAdded:Connect(function(child)
-    if Settings.AutoPylon and child.Name:lower():find("pylon") then
-        task.wait(0.1); interactWithPylon(child)
-    end
+    if Settings.AutoPylon and child.Name:lower():find("pylon") then task.wait(0.1); interactWithPylon(child) end
 end)
 table.insert(scriptConnections, connections["PylonAddedListener"])
 
 -- =====================================================================
--- LEVEL TRACKER (webhook hooked in)
+-- LEVEL TRACKER (with levels-gained counter + webhook)
 -- =====================================================================
 connections["LevelLogListener"] = LogService.MessageOut:Connect(function(msg, msgType)
     local lvlStr = string.match(msg, "Level%s*(%d+)")
     if lvlStr then
         local lvl = tonumber(lvlStr)
         if lvl then
-            local previousLevel = currentObservedLevel
+            local previous = currentObservedLevel
             currentObservedLevel = lvl
-            if previousLevel and lvl ~= previousLevel then
+            if previous and lvl ~= previous then
+                if lvl > previous then Webhook.LevelsGained = Webhook.LevelsGained + (lvl - previous) end
                 Webhook.LastSentLevel = lvl
                 if Webhook.LevelEnabled and (os.clock() - Webhook.LastLevelSendTime >= 1) then
                     Webhook.LastLevelSendTime = os.clock()
@@ -522,15 +555,9 @@ local function executeVoidKill()
     local char = getChar(plr)
     local root = getRoot(char)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if killVoid and root and hum and hum.Health > 0 then
-        local targetPosition = killVoid.Position + Vector3.new(0, 20, 0)
-        root.CFrame = CFrame.new(targetPosition)
-    end
+    if killVoid and root and hum and hum.Health > 0 then root.CFrame = CFrame.new(killVoid.Position + Vector3.new(0, 20, 0)) end
 end
 
--- =====================================================================
--- NEW LEVEL SOUND -> VOID TARGET
--- =====================================================================
 task.spawn(function()
     local sfxFolder = SoundService:WaitForChild("SFXFolder", 3) or SoundService:FindFirstChild("SFXFolder")
     local newLevelSound = sfxFolder and (sfxFolder:WaitForChild("NewLevel", 2) or sfxFolder:FindFirstChild("NewLevel"))
@@ -542,32 +569,24 @@ task.spawn(function()
                 Settings.TargetLevel = nil
                 local autoVoidInput = Options and Options.TargetLevelVoidInput
                 if autoVoidInput then autoVoidInput:SetValue("") end
-                local wasCollectingNormal = Settings.CollectNormal
-                local wasCollectingGolden = Settings.CollectGolden
+                local wasN, wasG = Settings.CollectNormal, Settings.CollectGolden
                 tweening = false
                 if currentTween then currentTween:Cancel(); currentTween = nil end
-                local respawnConnection
-                respawnConnection = plr.CharacterAdded:Connect(function(newChar)
-                    respawnConnection:Disconnect()
-                    task.wait(1.5)
-                    if Settings.AutoStartCollecting or wasCollectingNormal then
+                local respawnConn
+                respawnConn = plr.CharacterAdded:Connect(function()
+                    respawnConn:Disconnect(); task.wait(1.5)
+                    if Settings.AutoStartCollecting or wasN then
                         Settings.CollectNormal = true
-                        local normalTgl = getToggle("CollectNormalToggle")
-                        if normalTgl then normalTgl:SetValue(true) end
+                        local tgl = getToggle("CollectNormalToggle"); if tgl then tgl:SetValue(true) end
                         task.defer(function() collectGiftsEngine(false) end)
-                    elseif wasCollectingGolden then
+                    elseif wasG then
                         Settings.CollectGolden = true
-                        local goldenTgl = getToggle("CollectGoldenToggle")
-                        if goldenTgl then goldenTgl:SetValue(true) end
+                        local tgl = getToggle("CollectGoldenToggle"); if tgl then tgl:SetValue(true) end
                         task.defer(function() collectGiftsEngine(true) end)
                     end
                 end)
-                table.insert(scriptConnections, respawnConnection)
-                task.spawn(function()
-                    executeVoidKill()
-                    task.wait(30)
-                    targetVoidProcessing = false
-                end)
+                table.insert(scriptConnections, respawnConn)
+                task.spawn(function() executeVoidKill(); task.wait(30); targetVoidProcessing = false end)
             end
         end)
         table.insert(scriptConnections, connections["NewLevelVoidSoundConn"])
@@ -575,15 +594,14 @@ task.spawn(function()
 end)
 
 -- =====================================================================
--- PLAYER EVENTS (death hook for webhook)
+-- PLAYER EVENTS (death webhook here)
 -- =====================================================================
 local respawnCounter = 0
 local beaconFiredTime = 0
 local isAutoFarmProcessing = false
-
 local function handleEndScreenReset()
     task.spawn(function()
-        for i = 1, 4 do
+        for _ = 1, 4 do
             pcall(function()
                 local playerGui = plr:FindFirstChild("PlayerGui")
                 local endScreen = playerGui and playerGui:FindFirstChild("EndScreen")
@@ -606,17 +624,14 @@ local function handleEndScreenReset()
         isAutoFarmProcessing = false
     end)
 end
-
 local function handlePlayerDeath()
     respawnCounter += 1
-    -- Death webhook
     if Webhook.DeathEnabled and (os.clock() - Webhook.LastDeathSendTime >= 1) then
         Webhook.LastDeathSendTime = os.clock()
         task.spawn(function() dispatchDeathWebhook() end)
     end
     if Settings.AutoFarmBeta then handleEndScreenReset() end
 end
-
 local function setupCharacter(char)
     respawnCounter += 1
     local hum = char:WaitForChild("Humanoid", 3)
@@ -626,33 +641,29 @@ local function setupCharacter(char)
     end
     if nrb then task.wait(0.5); destroyRazorbloom() end
 end
-
 local charConn = plr.CharacterAdded:Connect(setupCharacter)
 table.insert(scriptConnections, charConn)
 if plr.Character then setupCharacter(plr.Character) end
 
 -- =====================================================================
--- AUTO FARM ENGINE
+-- VOTE / AUTO-FARM ENGINE
 -- =====================================================================
 local function isValueWhitelisted(value, whitelistTable)
     if not value or not whitelistTable then return false end
     local searchVal = tostring(value):lower()
-    for itemKey, isSelected in pairs(whitelistTable) do
-        local keyStr = type(itemKey) == "number" and tostring(isSelected) or tostring(itemKey)
-        local enabled = type(itemKey) == "number" and true or isSelected
+    for k, v in pairs(whitelistTable) do
+        local keyStr = type(k) == "number" and tostring(v) or tostring(k)
+        local enabled = type(k) == "number" and true or v
         if enabled and keyStr:lower() == searchVal then return true end
     end
     return false
 end
-
 local function hasAnyActiveWhitelist()
-    local tables = {Settings.EnemiesWhitelist, Settings.CursesWhitelist, Settings.UpgradesWhitelist}
-    for _, tbl in ipairs(tables) do
-        if tbl then for _, isSelected in pairs(tbl) do if isSelected then return true end end end
+    for _, tbl in ipairs({Settings.EnemiesWhitelist, Settings.CursesWhitelist, Settings.UpgradesWhitelist}) do
+        if tbl then for _, v in pairs(tbl) do if v then return true end end end
     end
     return false
 end
-
 local function interactWithPart(part)
     if not part or not part:IsA("BasePart") then return end
     local char = plr.Character
@@ -660,186 +671,138 @@ local function interactWithPart(part)
     if root then root.CFrame = part.CFrame + Vector3.new(0, 3, 0); task.wait(0.05) end
     VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game); task.wait(0.05)
     VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
-    local closestPrompt = nil
-    local shortestDist = 10
-    local searchScope = part.Parent or workspace
-    for _, prompt in ipairs(searchScope:GetChildren()) do
+    local closest, shortest = nil, 10
+    local scope = part.Parent or workspace
+    for _, prompt in ipairs(scope:GetChildren()) do
         if prompt:IsA("ProximityPrompt") and prompt.Parent and prompt.Parent:IsA("BasePart") then
             local dist = (prompt.Parent.Position - part.Position).Magnitude
-            if dist < shortestDist then shortestDist = dist; closestPrompt = prompt end
+            if dist < shortest then shortest = dist; closest = prompt end
         end
     end
-    if closestPrompt then
+    if closest then
         pcall(function()
-            if fireproximityprompt then fireproximityprompt(closestPrompt)
-            else closestPrompt:InputHoldBegin(); task.wait(closestPrompt.HoldDuration); closestPrompt:InputHoldEnd() end
+            if fireproximityprompt then fireproximityprompt(closest)
+            else closest:InputHoldBegin(); task.wait(closest.HoldDuration); closest:InputHoldEnd() end
         end)
     end
     local voteEvent = events and (events:FindFirstChild("Vote") or events:FindFirstChild("SelectVote"))
-    if voteEvent and voteEvent:IsA("RemoteEvent") then
-        pcall(function() voteEvent:FireServer(part.Name) end)
-    end
+    if voteEvent and voteEvent:IsA("RemoteEvent") then pcall(function() voteEvent:FireServer(part.Name) end) end
 end
-
 local function checkPartMatch(part)
     if not part then return false end
-    local choiceType = part:GetAttribute("ChoiceType")
-    local choiceName = part:GetAttribute("ChoiceName")
-    if choiceType and choiceName then
-        local upperType = tostring(choiceType):upper()
-        if upperType:find("ENEM") then return isValueWhitelisted(choiceName, Settings.EnemiesWhitelist)
-        elseif upperType:find("UPGRADE") then return isValueWhitelisted(choiceName, Settings.UpgradesWhitelist)
-        elseif upperType:find("CURSE") then return isValueWhitelisted(choiceName, Settings.CursesWhitelist) end
+    local t = part:GetAttribute("ChoiceType")
+    local n = part:GetAttribute("ChoiceName")
+    if t and n then
+        local u = tostring(t):upper()
+        if u:find("ENEM") then return isValueWhitelisted(n, Settings.EnemiesWhitelist)
+        elseif u:find("UPGRADE") then return isValueWhitelisted(n, Settings.UpgradesWhitelist)
+        elseif u:find("CURSE") then return isValueWhitelisted(n, Settings.CursesWhitelist) end
     end
     return false
 end
-
 local function checkAndVoteSelectParts()
     if not Settings.AutoFarmBeta or isAutoFarmProcessing then return end
     local selectFolder = workspace:FindFirstChild("Select")
     if not selectFolder or not (selectFolder:FindFirstChild("1") or selectFolder:FindFirstChild("2") or selectFolder:FindFirstChild("3")) then
-        table.clear(selectionState.failedParts); selectionState.rerollCount = 0
-        return
+        table.clear(selectionState.failedParts); selectionState.rerollCount = 0; return
     end
     isAutoFarmProcessing = true
     task.spawn(function()
         pcall(function()
-            local maxRerolls = 5
-            local maxIterations = 25
-            local iteration = 0
+            local maxRerolls, maxIter, iteration = 5, 25, 0
             local function getBoardState()
-                local s = workspace:FindFirstChild("Select")
-                if not s then return "" end
-                local p1 = s:FindFirstChild("1"); local p2 = s:FindFirstChild("2")
+                local s = workspace:FindFirstChild("Select"); if not s then return "" end
+                local p1, p2 = s:FindFirstChild("1"), s:FindFirstChild("2")
                 return (p1 and tostring(p1:GetAttribute("ChoiceName")) or "") .. "|" .. (p2 and tostring(p2:GetAttribute("ChoiceName")) or "")
             end
-            local function attemptBuy(partName)
-                local attempts = 0
-                local initialState = getBoardState()
+            local function attemptBuy(name)
+                local attempts, initial = 0, getBoardState()
                 while attempts < 4 and Settings.AutoFarmBeta do
-                    local sFolder = workspace:FindFirstChild("Select")
-                    if not sFolder then return true end
-                    local p = sFolder:FindFirstChild(partName)
-                    if not p then return true end
-                    interactWithPart(p); attempts = attempts + 1
+                    local s = workspace:FindFirstChild("Select"); if not s then return true end
+                    local p = s:FindFirstChild(name); if not p then return true end
+                    interactWithPart(p); attempts += 1
                     if attempts < 4 then task.wait(1.5) end
-                    local newState = getBoardState()
-                    if partName == "Reroll" then
-                        if newState ~= initialState then return true end
+                    local new = getBoardState()
+                    if name == "Reroll" then
+                        if new ~= initial then return true end
                     else
-                        if not sFolder:FindFirstChild(partName) or newState ~= initialState then return true end
+                        if not s:FindFirstChild(name) or new ~= initial then return true end
                     end
                 end
-                selectionState.failedParts[partName] = true
-                return false
+                selectionState.failedParts[name] = true; return false
             end
-            while Settings.AutoFarmBeta and iteration < maxIterations do
-                iteration = iteration + 1
-                selectFolder = workspace:FindFirstChild("Select")
-                if not selectFolder then break end
-                local rerollPart = selectFolder:FindFirstChild("Reroll")
-                local part3 = selectFolder:FindFirstChild("3")
-                local targetPartName = nil
-                local anyWhitelistActive = hasAnyActiveWhitelist()
-                local isCurseOrEnemySelection = false
-                local activeSpecificWhitelist = false
-                for _, name in ipairs({"1", "2"}) do
-                    local part = selectFolder:FindFirstChild(name)
-                    if part then
-                        local choiceType = tostring(part:GetAttribute("ChoiceType") or "")
-                        if choiceType:upper():find("CURSE") then
-                            isCurseOrEnemySelection = true
-                            activeSpecificWhitelist = (Settings.CursesWhitelist and next(Settings.CursesWhitelist) ~= nil)
-                            break
-                        elseif choiceType:upper():find("ENEM") then
-                            isCurseOrEnemySelection = true
-                            activeSpecificWhitelist = (Settings.EnemiesWhitelist and next(Settings.EnemiesWhitelist) ~= nil)
-                            break
+            while Settings.AutoFarmBeta and iteration < maxIter do
+                iteration += 1
+                selectFolder = workspace:FindFirstChild("Select"); if not selectFolder then break end
+                local reroll = selectFolder:FindFirstChild("Reroll")
+                local p3 = selectFolder:FindFirstChild("3")
+                local target, anyWL = nil, hasAnyActiveWhitelist()
+                local isCE, activeSpecific = false, false
+                for _, n in ipairs({"1","2"}) do
+                    local p = selectFolder:FindFirstChild(n)
+                    if p then
+                        local ct = tostring(p:GetAttribute("ChoiceType") or "")
+                        if ct:upper():find("CURSE") then isCE = true; activeSpecific = (Settings.CursesWhitelist and next(Settings.CursesWhitelist) ~= nil); break
+                        elseif ct:upper():find("ENEM") then isCE = true; activeSpecific = (Settings.EnemiesWhitelist and next(Settings.EnemiesWhitelist) ~= nil); break end
+                    end
+                end
+                for _, n in ipairs({"1","2"}) do
+                    if not selectionState.failedParts[n] then
+                        local p = selectFolder:FindFirstChild(n)
+                        if p then
+                            local cn = tostring(p:GetAttribute("ChoiceName") or "")
+                            if cn:lower():find("medalcurse") then target = n; break end
                         end
                     end
                 end
-                for _, name in ipairs({"1", "2"}) do
-                    if not selectionState.failedParts[name] then
-                        local part = selectFolder:FindFirstChild(name)
-                        if part then
-                            local choiceName = tostring(part:GetAttribute("ChoiceName") or "")
-                            if choiceName:lower():find("medalcurse") or choiceName:lower():find("medalcurses") then
-                                targetPartName = name; break
-                            end
+                if not target then
+                    for _, n in ipairs({"1","2"}) do
+                        if not selectionState.failedParts[n] then
+                            local p = selectFolder:FindFirstChild(n)
+                            if p and checkPartMatch(p) then target = n; break end
                         end
                     end
                 end
-                if not targetPartName then
-                    for _, name in ipairs({"1", "2"}) do
-                        if not selectionState.failedParts[name] then
-                            local part = selectFolder:FindFirstChild(name)
-                            if part and checkPartMatch(part) then targetPartName = name; break end
-                        end
+                if not target and not anyWL then
+                    local vp = {}
+                    for _, n in ipairs({"1","2"}) do
+                        if not selectionState.failedParts[n] and selectFolder:FindFirstChild(n) then table.insert(vp, n) end
                     end
+                    if #vp > 0 then target = vp[math.random(1, #vp)] end
                 end
-                if not targetPartName and not anyWhitelistActive then
-                    local validParts = {}
-                    for _, name in ipairs({"1", "2"}) do
-                        if not selectionState.failedParts[name] and selectFolder:FindFirstChild(name) then
-                            table.insert(validParts, name)
-                        end
-                    end
-                    if #validParts > 0 then targetPartName = validParts[math.random(1, #validParts)] end
-                end
-                if targetPartName then
-                    local success = attemptBuy(targetPartName)
-                    if success then continue end
+                if target then
+                    if attemptBuy(target) then continue end
                 else
-                    if rerollPart and selectionState.rerollCount < maxRerolls and anyWhitelistActive and not selectionState.failedParts["Reroll"] then
-                        if not isCurseOrEnemySelection then
-                            local success = attemptBuy("Reroll")
-                            if success then
-                                selectionState.rerollCount = selectionState.rerollCount + 1
-                                selectionState.failedParts["1"] = nil
-                                selectionState.failedParts["2"] = nil
+                    if reroll and selectionState.rerollCount < maxRerolls and anyWL and not selectionState.failedParts["Reroll"] then
+                        if not isCE then
+                            if attemptBuy("Reroll") then
+                                selectionState.rerollCount += 1
+                                selectionState.failedParts["1"] = nil; selectionState.failedParts["2"] = nil
                                 continue
                             end
                         end
                     end
-                    if isCurseOrEnemySelection then
-                        if part3 and not selectionState.failedParts["3"] then
-                            targetPartName = "3"
-                            local success = attemptBuy("3")
-                            if success then continue end
-                        elseif not activeSpecificWhitelist then
-                            local validParts = {}
-                            for _, name in ipairs({"1", "2"}) do
-                                if not selectionState.failedParts[name] and selectFolder:FindFirstChild(name) then
-                                    table.insert(validParts, name)
-                                end
-                            end
-                            if #validParts > 0 then
-                                targetPartName = validParts[math.random(1, #validParts)]
-                                local success = attemptBuy(targetPartName)
-                                if success then continue end
-                            end
+                    if isCE then
+                        if p3 and not selectionState.failedParts["3"] then
+                            if attemptBuy("3") then continue end
                         else
-                            local validParts = {}
-                            for _, name in ipairs({"1", "2"}) do
-                                if not selectionState.failedParts[name] and selectFolder:FindFirstChild(name) then
-                                    table.insert(validParts, name)
-                                end
+                            local vp = {}
+                            for _, n in ipairs({"1","2"}) do
+                                if not selectionState.failedParts[n] and selectFolder:FindFirstChild(n) then table.insert(vp, n) end
                             end
-                            if #validParts > 0 then
-                                targetPartName = validParts[math.random(1, #validParts)]
-                                local success = attemptBuy(targetPartName)
-                                if success then continue end
+                            if #vp > 0 then
+                                if attemptBuy(vp[math.random(1, #vp)]) then continue end
                             end
                         end
                     end
-                    if part3 and not selectionState.failedParts["3"] then attemptBuy("3") end
+                    if p3 and not selectionState.failedParts["3"] then attemptBuy("3") end
                     break
                 end
             end
             beaconFiredTime = os.clock()
-            local startRespawns = respawnCounter
+            local start = respawnCounter
             while isAutoFarmProcessing do
-                if (respawnCounter - startRespawns) >= 2 then break end
+                if (respawnCounter - start) >= 2 then break end
                 if beaconFiredTime and (os.clock() - beaconFiredTime) >= 5 then break end
                 task.wait(0.1)
             end
@@ -848,67 +811,50 @@ local function checkAndVoteSelectParts()
     end)
 end
 
--- =====================================================================
--- DEBUG ATTRIBUTE LOGGER
--- =====================================================================
 local function logSelectAttributes()
-    local selectFolder = workspace:FindFirstChild("Select")
-    if not selectFolder then return end
-    local categorized = { curses = {}, upgrades = {}, enemies = {}, other = {} }
-    local targets = {"1", "2", "3"}
-    local newFound = false
-    for _, name in ipairs(targets) do
-        local part = selectFolder:FindFirstChild(name)
-        if part then
-            local choiceName = tostring(part:GetAttribute("ChoiceName") or "N/A")
-            local choiceType = tostring(part:GetAttribute("ChoiceType") or "N/A")
-            local itemIndex = tostring(part:GetAttribute("itemIndex") or part:GetAttribute("ItemIndex") or "N/A")
-            local entryKey = string.format("%s_%s_%s", choiceName, choiceType, itemIndex)
-            if not loggedAttributes[entryKey] then
-                loggedAttributes[entryKey] = true
-                newFound = true
-                local formattedEntry = string.format('["%s", "%s", "%s"]', choiceName, choiceType, itemIndex)
-                local lowerType = choiceType:lower()
-                if lowerType:find("curse") then table.insert(categorized.curses, formattedEntry)
-                elseif lowerType:find("upgrade") then table.insert(categorized.upgrades, formattedEntry)
-                elseif lowerType:find("enemi") or lowerType:find("enemy") then table.insert(categorized.enemies, formattedEntry)
-                else table.insert(categorized.other, formattedEntry) end
+    local selectFolder = workspace:FindFirstChild("Select"); if not selectFolder then return end
+    local cat = {curses={},upgrades={},enemies={},other={}}; local found = false
+    for _, n in ipairs({"1","2","3"}) do
+        local p = selectFolder:FindFirstChild(n)
+        if p then
+            local cn, ct, ci = tostring(p:GetAttribute("ChoiceName") or "N/A"), tostring(p:GetAttribute("ChoiceType") or "N/A"), tostring(p:GetAttribute("itemIndex") or "N/A")
+            local key = string.format("%s_%s_%s", cn, ct, ci)
+            if not loggedAttributes[key] then
+                loggedAttributes[key] = true; found = true
+                local e = string.format('["%s", "%s", "%s"]', cn, ct, ci)
+                local lt = ct:lower()
+                if lt:find("curse") then table.insert(cat.curses, e)
+                elseif lt:find("upgrade") then table.insert(cat.upgrades, e)
+                elseif lt:find("enemi") then table.insert(cat.enemies, e)
+                else table.insert(cat.other, e) end
             end
         end
     end
-    if newFound then
-        local outputSections = {}
-        if #categorized.curses > 0 then table.insert(outputSections, "Attributes found for curses:\n" .. table.concat(categorized.curses, "\n")) end
-        if #categorized.upgrades > 0 then table.insert(outputSections, "Attributes found for upgrades:\n" .. table.concat(categorized.upgrades, "\n")) end
-        if #categorized.enemies > 0 then table.insert(outputSections, "Attributes found for enemies:\n" .. table.concat(categorized.enemies, "\n")) end
-        if #categorized.other > 0 then table.insert(outputSections, "Attributes found for other:\n" .. table.concat(categorized.other, "\n")) end
-        if #outputSections > 0 then
-            local fullBlock = table.concat(outputSections, "\n\n\n") .. "\n\n\n"
-            print("[Debug Attributes Output]:\n" .. fullBlock)
+    if found then
+        local out = {}
+        if #cat.curses > 0 then table.insert(out, "Curses:\n" .. table.concat(cat.curses, "\n")) end
+        if #cat.upgrades > 0 then table.insert(out, "Upgrades:\n" .. table.concat(cat.upgrades, "\n")) end
+        if #cat.enemies > 0 then table.insert(out, "Enemies:\n" .. table.concat(cat.enemies, "\n")) end
+        if #cat.other > 0 then table.insert(out, "Other:\n" .. table.concat(cat.other, "\n")) end
+        if #out > 0 then
+            local full = table.concat(out, "\n\n") .. "\n\n"
+            print("[Debug Attributes]:\n" .. full)
             if writefile and appendfile then
                 pcall(function()
-                    if not isfile or not isfile("SelectAttributesLog.txt") then
-                        writefile("SelectAttributesLog.txt", fullBlock)
-                    else
-                        appendfile("SelectAttributesLog.txt", fullBlock)
-                    end
+                    if not isfile or not isfile("SelectAttributesLog.txt") then writefile("SelectAttributesLog.txt", full)
+                    else appendfile("SelectAttributesLog.txt", full) end
                 end)
             end
         end
     end
 end
 
--- =====================================================================
--- PROTECTIONS / TILES
--- =====================================================================
 local function applyTileConnections()
     local mapFolder = workspace:FindFirstChild("Map") or workspace:FindFirstChild("CurrentRooms") or workspace
     for _, obj in ipairs(mapFolder:GetDescendants()) do
         if obj:IsA("BasePart") then
-            local lowerName = obj.Name:lower()
-            if lowerName:find("flesh") or lowerName:find("ice") or lowerName:find("tile") then
-                obj.CanTouch = not antiFleshTilesEnabled
-            end
+            local ln = obj.Name:lower()
+            if ln:find("flesh") or ln:find("ice") or ln:find("tile") then obj.CanTouch = not antiFleshTilesEnabled end
         end
     end
 end
@@ -917,24 +863,20 @@ local function createProtectionSphere(target, radius, color)
     local sphere = Instance.new("Part")
     sphere.Name = "SafeProtectionSphere"
     sphere.Shape = Enum.PartType.Ball
-    sphere.Size = Vector3.new(radius * 2, radius * 2, radius * 2)
+    sphere.Size = Vector3.new(radius*2, radius*2, radius*2)
     sphere.CFrame = target:IsA("BasePart") and target.CFrame or target:GetPivot()
-    sphere.Anchored = true
-    sphere.CanCollide = true
-    sphere.CanTouch = true
+    sphere.Anchored = true; sphere.CanCollide = true; sphere.CanTouch = true
     sphere.Material = Enum.Material.Plastic
     sphere.Color = color or Color3.fromRGB(0, 170, 255)
-    sphere.Transparency = 0
-    sphere.Parent = protectionFolder
+    sphere.Transparency = 0; sphere.Parent = protectionFolder
     return sphere
 end
-
 local function protectTripmine(trip)
     if activeTripmineProtections[trip] or (trip:IsA("BasePart") and trip.Transparency == 1) then return end
     local size = trip:IsA("BasePart") and trip.Size.X or 3
     local radius = (size + 5) / 2
     local sphere = createProtectionSphere(trip, radius, Color3.fromRGB(0, 255, 150))
-    activeTripmineProtections[trip] = { sphere = sphere, radius = radius }
+    activeTripmineProtections[trip] = {sphere = sphere, radius = radius}
     local conn = trip.Destroying:Connect(function()
         if activeTripmineProtections[trip] then
             if activeTripmineProtections[trip].sphere then activeTripmineProtections[trip].sphere:Destroy() end
@@ -943,13 +885,12 @@ local function protectTripmine(trip)
     end)
     table.insert(scriptConnections, conn)
 end
-
 local function protectBullet(b)
     if activeBulletProtections[b] or (b:IsA("BasePart") and b.Transparency == 1) then return end
     local size = b:IsA("BasePart") and b.Size.X or 4
     local radius = (size + 6) / 2
     local sphere = createProtectionSphere(b, radius, Color3.fromRGB(255, 50, 50))
-    activeBulletProtections[b] = { sphere = sphere, radius = radius }
+    activeBulletProtections[b] = {sphere = sphere, radius = radius}
     local conn = b.Destroying:Connect(function()
         if activeBulletProtections[b] then
             if activeBulletProtections[b].sphere then activeBulletProtections[b].sphere:Destroy() end
@@ -958,508 +899,361 @@ local function protectBullet(b)
     end)
     table.insert(scriptConnections, conn)
 end
-
 local lastProtectionScan = 0
 local function processProtections()
     local now = os.clock()
     if now - lastProtectionScan > 0.5 then
         lastProtectionScan = now
         if pt then
-            if tripmines then for _, mine in ipairs(tripmines:GetChildren()) do protectTripmine(mine) end end
-            if goldentripmines then for _, mine in ipairs(goldentripmines:GetChildren()) do protectTripmine(mine) end end
+            if tripmines then for _, m in ipairs(tripmines:GetChildren()) do protectTripmine(m) end end
+            if goldentripmines then for _, m in ipairs(goldentripmines:GetChildren()) do protectTripmine(m) end end
         else
             if next(activeTripmineProtections) then
-                for mine, data in pairs(activeTripmineProtections) do
-                    if data.sphere then data.sphere:Destroy() end
-                end
+                for _, d in pairs(activeTripmineProtections) do if d.sphere then d.sphere:Destroy() end end
                 table.clear(activeTripmineProtections)
             end
         end
-        if pb and bullets then
-            for _, b in ipairs(bullets:GetChildren()) do protectBullet(b) end
+        if pb and bullets then for _, b in ipairs(bullets:GetChildren()) do protectBullet(b) end
         else
             if next(activeBulletProtections) then
-                for bullet, data in pairs(activeBulletProtections) do
-                    if data.sphere then data.sphere:Destroy() end
-                end
+                for _, d in pairs(activeBulletProtections) do if d.sphere then d.sphere:Destroy() end end
                 table.clear(activeBulletProtections)
             end
         end
     end
-    for target, data in pairs(activeTripmineProtections) do
-        if target and target.Parent and data.sphere then
-            data.sphere.CFrame = target:IsA("BasePart") and target.CFrame or target:GetPivot()
-        end
+    for t, d in pairs(activeTripmineProtections) do
+        if t and t.Parent and d.sphere then d.sphere.CFrame = t:IsA("BasePart") and t.CFrame or t:GetPivot() end
     end
-    for target, data in pairs(activeBulletProtections) do
-        if target and target.Parent and data.sphere then
-            data.sphere.CFrame = target:IsA("BasePart") and target.CFrame or target:GetPivot()
-        end
+    for t, d in pairs(activeBulletProtections) do
+        if t and t.Parent and d.sphere then d.sphere.CFrame = t:IsA("BasePart") and t.CFrame or t:GetPivot() end
     end
 end
 
 -- =====================================================================
--- GIFT COLLECTION ENGINE
+-- GIFT ENGINE
 -- =====================================================================
 local Library
 local function notif(msg, title)
-    if Library and Library.Notify then
-        Library:Notify(string.format("[%s]: %s", title or "System", msg), 3)
-    end
+    if Library and Library.Notify then Library:Notify(string.format("[%s]: %s", title or "System", msg), 3) end
 end
-
 local giftCache, giftCacheBuilt, lastFullScan = {}, false, 0
 local FULL_SCAN_INTERVAL = 1.2
 local GIFT_Y_MIN, GIFT_Y_MAX, GIFT_DIST_MAX = -2000, 5000, 60000
 local collectedGifts = {}
 local COLLECTED_TIMEOUT = 8
-
 local function classifyGift(obj)
     if not obj or not obj.Parent then return nil end
-    local nameLower = obj.Name:lower()
-    if not (nameLower:find("gift") or nameLower:find("present")) then return nil end
-    local part = obj:IsA("BasePart") and obj
-              or obj:FindFirstChildWhichIsA("BasePart", true)
-              or (obj.IsA and obj:IsA("Model") and obj.PrimaryPart)
+    local ln = obj.Name:lower()
+    if not (ln:find("gift") or ln:find("present")) then return nil end
+    local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true) or (obj.IsA and obj:IsA("Model") and obj.PrimaryPart)
     if not part then return nil end
-    local isGolden = (nameLower:find("golden") ~= nil) or (nameLower:find("gold") ~= nil)
-    return { obj = obj, part = part, isGolden = isGolden }
+    return {obj = obj, part = part, isGolden = (ln:find("golden") ~= nil) or (ln:find("gold") ~= nil)}
 end
-
 local function rebuildGiftCache()
-    local newCache = {}
+    local new = {}
     local roots = {workspace:FindFirstChild("Item_Pools"), workspace:FindFirstChild("CurrentRooms"), workspace:FindFirstChild("Gifts"), workspace:FindFirstChild("SpawnedGifts")}
-    local function scan(container)
-        if not container then return end
-        for _, child in ipairs(container:GetDescendants()) do
-            local info = classifyGift(child)
-            if info then newCache[#newCache + 1] = info end
-        end
-    end
-    for _, root in ipairs(roots) do scan(root) end
-    for _, child in ipairs(workspace:GetChildren()) do
-        local info = classifyGift(child)
-        if info then newCache[#newCache + 1] = info end
-    end
-    giftCache, giftCacheBuilt, lastFullScan = newCache, true, os.clock()
+    local function scan(c) if not c then return end for _, ch in ipairs(c:GetDescendants()) do local i = classifyGift(ch); if i then new[#new+1] = i end end end
+    for _, r in ipairs(roots) do scan(r) end
+    for _, ch in ipairs(workspace:GetChildren()) do local i = classifyGift(ch); if i then new[#new+1] = i end end
+    giftCache, giftCacheBuilt, lastFullScan = new, true, os.clock()
 end
-
 local function pruneCache()
     local pruned, present = {}, {}
-    for _, info in ipairs(giftCache) do
-        if info.obj and info.obj.Parent and info.part and info.part.Parent then
-            pruned[#pruned + 1] = info; present[info.obj] = true
-        end
+    for _, i in ipairs(giftCache) do
+        if i.obj and i.obj.Parent and i.part and i.part.Parent then pruned[#pruned+1] = i; present[i.obj] = true end
     end
     giftCache = pruned
     local now = os.clock()
-    for gift, ts in pairs(collectedGifts) do
-        if not present[gift] or (now - ts) > COLLECTED_TIMEOUT then collectedGifts[gift] = nil end
+    for g, ts in pairs(collectedGifts) do
+        if not present[g] or (now - ts) > COLLECTED_TIMEOUT then collectedGifts[g] = nil end
     end
 end
-
-local function refreshGiftCache(forceFull)
-    if forceFull or not giftCacheBuilt or (os.clock() - lastFullScan) >= FULL_SCAN_INTERVAL then
-        rebuildGiftCache()
-    end
+local function refreshGiftCache(force)
+    if force or not giftCacheBuilt or (os.clock() - lastFullScan) >= FULL_SCAN_INTERVAL then rebuildGiftCache() end
     pruneCache()
 end
-
 local function isValidGiftPos(pos)
     if pos == Vector3.new(0,0,0) then return false end
     if pos.Y < GIFT_Y_MIN or pos.Y > GIFT_Y_MAX then return false end
     if pos.Magnitude > GIFT_DIST_MAX then return false end
     return true
 end
-
-local function getClosestGift(targetGolden, blacklist)
-    local char = getChar(plr); local root = getRoot(char)
-    if not root then return nil end
+local function getClosestGift(golden, blacklist)
+    local root = getRoot(getChar(plr)); if not root then return nil end
     local rootPos = root.Position
-    local closest, closestInfo, shortest = nil, nil, math.huge
-    for _, info in ipairs(giftCache) do
-        if info.obj and info.obj.Parent and info.part and info.part.Parent then
-            if info.isGolden == targetGolden and not blacklist[info.obj] and not collectedGifts[info.obj] then
-                local pos = info.part.Position
+    local closest, info, shortest = nil, nil, math.huge
+    for _, i in ipairs(giftCache) do
+        if i.obj and i.obj.Parent and i.part and i.part.Parent then
+            if i.isGolden == golden and not blacklist[i.obj] and not collectedGifts[i.obj] then
+                local pos = i.part.Position
                 if isValidGiftPos(pos) then
-                    local dist = (pos - rootPos).Magnitude
-                    if dist < shortest then shortest = dist; closest = info.obj; closestInfo = info end
+                    local d = (pos - rootPos).Magnitude
+                    if d < shortest then shortest = d; closest = i.obj; info = i end
                 end
             end
         end
     end
-    return closest, closestInfo
+    return closest, info
 end
-
-local function walkToPositionPathfinding(targetPos)
+local function walkToPositionPathfinding(target)
     local char = getChar(plr); local root = getRoot(char)
-    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-    if not root or not humanoid or not targetPos or targetPos == Vector3.new(0,0,0) then return false end
-    humanoid.WalkSpeed = Settings.LegitSpeed
-    local path = PathfindingService:CreatePath({AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentJumpHeight = 10, AgentMaxSlope = 45})
-    local success = pcall(function() path:ComputeAsync(root.Position, targetPos) end)
-    if success and path.Status == Enum.PathStatus.Success then
-        local waypoints = path:GetWaypoints()
-        for _, waypoint in ipairs(waypoints) do
-            if not tweening and not Settings.AutoBeacon then humanoid:MoveTo(root.Position); return false end
-            if waypoint.Action == Enum.PathWaypointAction.Jump then humanoid.Jump = true end
-            humanoid:MoveTo(waypoint.Position)
-            local moveCompleted = false
-            local conn = humanoid.MoveToFinished:Connect(function() moveCompleted = true end)
-            local timeout = 0
-            while not moveCompleted and (tweening or Settings.AutoBeacon) do
-                task.wait(0.05); timeout += 0.05
-                if timeout > 3 then break end
-            end
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum or not target or target == Vector3.new(0,0,0) then return false end
+    hum.WalkSpeed = Settings.LegitSpeed
+    local path = PathfindingService:CreatePath({AgentRadius=2, AgentHeight=5, AgentCanJump=true, AgentJumpHeight=10, AgentMaxSlope=45})
+    local ok = pcall(function() path:ComputeAsync(root.Position, target) end)
+    if ok and path.Status == Enum.PathStatus.Success then
+        for _, wp in ipairs(path:GetWaypoints()) do
+            if not tweening and not Settings.AutoBeacon then hum:MoveTo(root.Position); return false end
+            if wp.Action == Enum.PathWaypointAction.Jump then hum.Jump = true end
+            hum:MoveTo(wp.Position)
+            local done = false
+            local conn = hum.MoveToFinished:Connect(function() done = true end)
+            local t = 0
+            while not done and (tweening or Settings.AutoBeacon) do task.wait(0.05); t += 0.05; if t > 3 then break end end
             conn:Disconnect()
-            if not moveCompleted then break end
+            if not done then break end
         end
         return true
     else
-        humanoid:MoveTo(targetPos); task.wait(0.5); return false
+        hum:MoveTo(target); task.wait(0.5); return false
     end
 end
-
 local function moveToGift(info)
     if not info or not info.part or not info.part.Parent then return nil end
     if Settings.LegitCollection then walkToPositionPathfinding(info.part.Position); return nil end
-    local char = getChar(plr); local root = getRoot(char)
-    if not root then return nil end
-    local targetCFrame = info.part.CFrame + Vector3.new(0, 3, 0)
+    local root = getRoot(getChar(plr)); if not root then return nil end
+    local target = info.part.CFrame + Vector3.new(0, 3, 0)
     if Settings.InstantTeleport then
-        root.CFrame = targetCFrame
+        root.CFrame = target
         root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
         return nil
     end
-    local distance = (info.part.Position - root.Position).Magnitude
-    local duration = math.max(0.01, distance / Settings.TweenSpeed)
-    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
-    local tween = TweenService:Create(root, tweenInfo, {CFrame = targetCFrame})
-    tween:Play()
-    return tween
+    local d = (info.part.Position - root.Position).Magnitude
+    local dur = math.max(0.01, d / Settings.TweenSpeed)
+    local ti = TweenInfo.new(dur, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
+    local tw = TweenService:Create(root, ti, {CFrame = target}); tw:Play(); return tw
 end
-
 local function handleSpawnNavigation()
-    for _, sName in ipairs({"Spawn", "SpawnLocation"}) do
-        local targetSpawn = workspace:FindFirstChild(sName)
-        if targetSpawn and targetSpawn:IsA("BasePart") and targetSpawn.Position ~= Vector3.new(0,0,0) then
-            local char = getChar(plr); local root = getRoot(char)
+    for _, sn in ipairs({"Spawn", "SpawnLocation"}) do
+        local s = workspace:FindFirstChild(sn)
+        if s and s:IsA("BasePart") and s.Position ~= Vector3.new(0,0,0) then
+            local root = getRoot(getChar(plr))
             if root then
-                if Settings.LegitCollection then walkToPositionPathfinding(targetSpawn.Position)
-                else
-                    root.CFrame = targetSpawn.CFrame + Vector3.new(0, 5, 0)
-                    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-                end
+                if Settings.LegitCollection then walkToPositionPathfinding(s.Position)
+                else root.CFrame = s.CFrame + Vector3.new(0, 5, 0); root.AssemblyLinearVelocity = Vector3.new(0, 0, 0) end
                 return true
             end
         end
     end
     return false
 end
-
 local function stopAllCollection()
-    collectionRunId += 1
-    tweening = false
-    Settings.CollectNormal = false
-    Settings.CollectGolden = false
-    Settings.LegitCollection = false
+    collectionRunId += 1; tweening = false
+    Settings.CollectNormal = false; Settings.CollectGolden = false; Settings.LegitCollection = false
     if currentTween then pcall(function() currentTween:Cancel() end); currentTween = nil end
-    local normalToggle = getToggle("CollectNormalToggle")
-    if normalToggle then normalToggle:SetValue(false) end
-    local goldenToggle = getToggle("CollectGoldenToggle")
-    if goldenToggle then goldenToggle:SetValue(false) end
-    local legitToggle = getToggle("LegitCollectionToggle")
-    if legitToggle then legitToggle:SetValue(false) end
+    local n = getToggle("CollectNormalToggle"); if n then n:SetValue(false) end
+    local g = getToggle("CollectGoldenToggle"); if g then g:SetValue(false) end
+    local l = getToggle("LegitCollectionToggle"); if l then l:SetValue(false) end
 end
-
 if collectGift then
     pcall(function()
         if collectGift:IsA("RemoteEvent") then
-            local conn = collectGift.OnClientEvent:Connect(function(...)
-                local args = {...}
-                for _, arg in ipairs(args) do
-                    if typeof(arg) == "Instance" then collectedGifts[arg] = os.clock(); blacklistedGifts[arg] = true end
-                end
+            local c = collectGift.OnClientEvent:Connect(function(...)
+                for _, a in ipairs({...}) do if typeof(a) == "Instance" then collectedGifts[a] = os.clock(); blacklistedGifts[a] = true end end
             end)
-            table.insert(scriptConnections, conn)
+            table.insert(scriptConnections, c)
         elseif collectGift:IsA("BindableEvent") then
-            local conn = collectGift.Event:Connect(function(...)
-                local args = {...}
-                for _, arg in ipairs(args) do
-                    if typeof(arg) == "Instance" then collectedGifts[arg] = os.clock(); blacklistedGifts[arg] = true end
-                end
+            local c = collectGift.Event:Connect(function(...)
+                for _, a in ipairs({...}) do if typeof(a) == "Instance" then collectedGifts[a] = os.clock(); blacklistedGifts[a] = true end end
             end)
-            table.insert(scriptConnections, conn)
+            table.insert(scriptConnections, c)
         end
     end)
 end
-
 local function startCollectionEngine(mode)
     collectionRunId += 1
     local myRunId = collectionRunId
     tweening = true
     table.clear(blacklistedGifts)
     task.spawn(function()
-        local recentAttempts = {}
-        local ATTEMPT_COOLDOWN = 0.5
-        local emptyStreak = 0
-        local MAX_EMPTY_STREAK = 4
+        local recent, ATT = {}, 0.5
+        local empty, MAXE = 0, 4
         local currentTarget = mode == "golden" and "golden" or "normal"
-        local fallbackNotified = false
-        local noGiftsNotified = false
+        local fallbackNotif, giveupNotif = false, false
         refreshGiftCache(true)
-        local function currentRunIsStale() return myRunId ~= collectionRunId end
-        local function targetAvailable(isGolden)
-            for _, info in ipairs(giftCache) do
-                if info.isGolden == isGolden and info.obj and info.obj.Parent and info.part and info.part.Parent then
-                    if isValidGiftPos(info.part.Position) and not collectedGifts[info.obj] then return true end
-                end
-            end
-            return false
-        end
-        local function doFallbackToGolden()
-            if fallbackNotified then return end
-            fallbackNotified = true
-            if notifOn then notif("No normal gifts left. Falling back to Golden Gifts.", "Collection System") end
-        end
-        local function doGiveUp(reasonGolden)
-            if noGiftsNotified then return end
-            noGiftsNotified = true
-            if reasonGolden then
-                if notifOn then notif("No Golden Gifts remaining. Disabling gift collection.", "Collection System") end
-            else
-                if notifOn then notif("No gifts available. Disabling gift collection.", "Collection System") end
-            end
-            if Settings.AutoBeacon then handleSpawnNavigation() end
-            stopAllCollection()
-        end
-        while tweening and not currentRunIsStale() do
-            local wantNormal = Settings.CollectNormal
-            local wantGolden = Settings.CollectGolden
-            if not wantNormal and not wantGolden then break end
+        local function stale() return myRunId ~= collectionRunId end
+        local function has(g) for _, i in ipairs(giftCache) do if i.isGolden == g and i.obj and i.obj.Parent and i.part and i.part.Parent then if isValidGiftPos(i.part.Position) and not collectedGifts[i.obj] then return true end end end return false end
+        local function fallback() if fallbackNotif then return end fallbackNotif = true; if notifOn then notif("Falling back to Golden Gifts.", "Collection") end end
+        local function giveup(g) if giveupNotif then return end giveupNotif = true; if notifOn then notif(g and "No Golden Gifts. Stopping." or "No gifts. Stopping.", "Collection") end if Settings.AutoBeacon then handleSpawnNavigation() end stopAllCollection() end
+        while tweening and not stale() do
+            local wantN, wantG = Settings.CollectNormal, Settings.CollectGolden
+            if not wantN and not wantG then break end
             if mode == "golden" then currentTarget = "golden"
             elseif mode == "normal" then currentTarget = "normal"
             else
-                if not wantNormal then currentTarget = "golden"
-                elseif not wantGolden then currentTarget = "normal"
-                else
-                    if currentTarget == "normal" and not targetAvailable(false) then
-                        doFallbackToGolden()
-                        currentTarget = "golden"
-                    end
-                end
+                if not wantN then currentTarget = "golden"
+                elseif not wantG then currentTarget = "normal"
+                else if currentTarget == "normal" and not has(false) then fallback(); currentTarget = "golden" end end
             end
-            local isGoldenTarget = (currentTarget == "golden")
-            if not targetAvailable(isGoldenTarget) then
-                local otherGolden = not isGoldenTarget
-                if targetAvailable(otherGolden) then
+            local isG = (currentTarget == "golden")
+            if not has(isG) then
+                if has(not isG) then
                     if mode == "auto" then
-                        if currentTarget == "normal" then doFallbackToGolden() end
-                        currentTarget = otherGolden and "golden" or "normal"
-                        isGoldenTarget = otherGolden
+                        if currentTarget == "normal" then fallback() end
+                        currentTarget = (not isG) and "golden" or "normal"; isG = not isG
                     end
                 else
-                    emptyStreak += 1
-                    if emptyStreak >= MAX_EMPTY_STREAK then doGiveUp(isGoldenTarget); return end
+                    empty += 1
+                    if empty >= MAXE then giveup(isG); return end
                     task.wait(0.15); continue
                 end
             end
-            local char = getChar(plr); local root = getRoot(char)
-            if not root then task.wait(0.2); continue end
+            local root = getRoot(getChar(plr)); if not root then task.wait(0.2); continue end
             if not Settings.LegitCollection then root.AssemblyLinearVelocity = Vector3.new(0, 0, 0) end
-            refreshGiftCache(false)
-            if currentRunIsStale() then break end
+            refreshGiftCache(false); if stale() then break end
             local now = os.clock()
-            for obj, t in pairs(recentAttempts) do
-                if now - t > ATTEMPT_COOLDOWN then recentAttempts[obj] = nil end
-            end
-            local gift, giftInfo = getClosestGift(isGoldenTarget, recentAttempts)
+            for o, t in pairs(recent) do if now - t > ATT then recent[o] = nil end end
+            local gift, info = getClosestGift(isG, recent)
             if not gift then
-                emptyStreak += 1
-                if emptyStreak >= MAX_EMPTY_STREAK then
+                empty += 1
+                if empty >= MAXE then
                     if mode == "auto" then
-                        local otherGolden = not isGoldenTarget
-                        if targetAvailable(otherGolden) then
-                            if currentTarget == "normal" then doFallbackToGolden() end
-                            currentTarget = otherGolden and "golden" or "normal"
-                            emptyStreak = 0
-                        else doGiveUp(isGoldenTarget); return end
-                    else doGiveUp(isGoldenTarget); return end
+                        if has(not isG) then
+                            if currentTarget == "normal" then fallback() end
+                            currentTarget = (not isG) and "golden" or "normal"; empty = 0
+                        else giveup(isG); return end
+                    else giveup(isG); return end
                 end
                 task.wait(0.12); continue
             end
-            emptyStreak = 0
-            recentAttempts[gift] = os.clock()
-            currentTween = moveToGift(giftInfo)
+            empty = 0; recent[gift] = os.clock()
+            currentTween = moveToGift(info)
             if currentTween then
-                local tweenDone = false
-                local tweenConn
-                tweenConn = currentTween.Completed:Connect(function() tweenDone = true end)
-                local timeout = 0
-                while not tweenDone and tweening and not currentRunIsStale() do
-                    task.wait(0.02); timeout += 0.02
-                    if timeout > 3 then break end
-                end
-                if tweenConn then tweenConn:Disconnect() end
+                local done = false
+                local c = currentTween.Completed:Connect(function() done = true end)
+                local t = 0
+                while not done and tweening and not stale() do task.wait(0.02); t += 0.02; if t > 3 then break end end
+                if c then c:Disconnect() end
                 currentTween = nil
             else task.wait(0.03) end
-            if currentRunIsStale() then break end
+            if stale() then break end
             if gift and gift.Parent then collectedGifts[gift] = os.clock() end
-            if gift then recentAttempts[gift] = os.clock() end
+            if gift then recent[gift] = os.clock() end
             if Settings.DelayBetweenGifts and Settings.DelayBetweenGifts > 0 then task.wait(Settings.DelayBetweenGifts) end
         end
-        if not currentRunIsStale() then stopAllCollection() end
+        if not stale() then stopAllCollection() end
     end)
 end
-
-collectGiftsEngine = function(isGoldenTarget)
-    if isGoldenTarget then startCollectionEngine("golden") else startCollectionEngine("auto") end
-end
+collectGiftsEngine = function(gt) if gt then startCollectionEngine("golden") else startCollectionEngine("auto") end end
 
 -- =====================================================================
--- ENEMY UTILITIES
+-- ENEMY UTILS
 -- =====================================================================
 local function disableEnemyEntity(entity)
     if not entity or not (entity:IsA("Model") or entity:IsA("Folder") or entity:IsA("BasePart")) then return end
-    local humanoid = entity:FindFirstChildOfClass("Humanoid")
-    if humanoid then
-        humanoid:ChangeState(Enum.HumanoidStateType.Physics)
-        humanoid.WalkSpeed = 0
-        humanoid.PlatformStand = true
-    end
-    for _, obj in ipairs(entity:GetChildren()) do
-        if obj:IsA("Script") or obj:IsA("LocalScript") then obj.Disabled = true
-        elseif obj:IsA("BasePart") then obj.CanCollide = false; obj.Anchored = true end
+    local h = entity:FindFirstChildOfClass("Humanoid")
+    if h then h:ChangeState(Enum.HumanoidStateType.Physics); h.WalkSpeed = 0; h.PlatformStand = true end
+    for _, o in ipairs(entity:GetChildren()) do
+        if o:IsA("Script") or o:IsA("LocalScript") then o.Disabled = true
+        elseif o:IsA("BasePart") then o.CanCollide = false; o.Anchored = true end
     end
 end
-
-local function disableEnemy(name, destroy, breakAI, disableAI)
-    local target = enemies and enemies:FindFirstChild(name)
-    if not target then return false end
-    if destroy then target:Destroy(); return true
-    elseif breakAI or disableAI then disableEnemyEntity(target); return true end
+local function disableEnemy(name, destroy, brk, dis)
+    local t = enemies and enemies:FindFirstChild(name); if not t then return false end
+    if destroy then t:Destroy(); return true
+    elseif brk or dis then disableEnemyEntity(t); return true end
     return false
 end
-
 local function processClientSideEnemies()
-    local clientTargets = {"nilEnemy", "nilMirage"}
-    local destroyTargets = {"Kolona", "Operator", "scrapmaw", "skinwalker", "sigil"}
-    local searchContainers = {Camera, enemies, enemiesFolder}
-    for _, container in ipairs(searchContainers) do
-        if container then
-            for _, child in ipairs(container:GetChildren()) do
-                local childNameLower = child.Name:lower()
-                for _, targetName in ipairs(clientTargets) do
-                    if childNameLower == targetName:lower() then disableEnemyEntity(child) end
-                end
-                for _, targetName in ipairs(destroyTargets) do
-                    if childNameLower == targetName:lower() then child:Destroy() end
-                end
+    local ct = {"nilEnemy","nilMirage"}
+    local dt = {"Kolona","Operator","scrapmaw","skinwalker","sigil"}
+    for _, c in ipairs({Camera, enemies, enemiesFolder}) do
+        if c then
+            for _, ch in ipairs(c:GetChildren()) do
+                local ln = ch.Name:lower()
+                for _, t in ipairs(ct) do if ln == t:lower() then disableEnemyEntity(ch) end end
+                for _, t in ipairs(dt) do if ln == t:lower() then ch:Destroy() end end
             end
         end
     end
 end
-
 local function processPortedDisables()
-    local searchPools = {workspace, dynamicItems, enemies, beacons}
-    local function checkAndDestroy(instance)
-        if not instance or not instance.Parent then return end
-        local nameLower = instance.Name:lower()
-        if disableSeaMines and (nameLower:find("seamine") or nameLower:find("sea_mine") or nameLower:find("mine")) and not nameLower:find("trip") then
-            pcall(function() instance:Destroy() end); return
-        end
-        if disableVoidImplosions and (nameLower:find("voidimplosion") or nameLower:find("implosion") or nameLower:find("void_implosion")) then
-            pcall(function() instance:Destroy() end); return
-        end
-        if disableFakeBeacons and (nameLower:find("fakebeacon") or nameLower:find("fake_beacon") or (nameLower:find("beacon") and nameLower:find("fake"))) then
-            pcall(function() instance:Destroy() end); return
-        end
-        if disableOblivion and (nameLower:find("oblivion") or nameLower:find("oblivionentity")) then
-            pcall(function() instance:Destroy() end); return
-        end
+    local pools = {workspace, dynamicItems, enemies, beacons}
+    local function cd(i)
+        if not i or not i.Parent then return end
+        local ln = i.Name:lower()
+        if disableSeaMines and (ln:find("seamine") or ln:find("sea_mine") or ln:find("mine")) and not ln:find("trip") then pcall(function() i:Destroy() end); return end
+        if disableVoidImplosions and (ln:find("voidimplosion") or ln:find("implosion")) then pcall(function() i:Destroy() end); return end
+        if disableFakeBeacons and (ln:find("fakebeacon") or ln:find("fake_beacon") or (ln:find("beacon") and ln:find("fake"))) then pcall(function() i:Destroy() end); return end
+        if disableOblivion and (ln:find("oblivion")) then pcall(function() i:Destroy() end); return end
     end
-    for _, container in ipairs(searchPools) do
-        if container then
-            for _, child in ipairs(container:GetChildren()) do
-                checkAndDestroy(child)
-                if child:IsA("Folder") or child:IsA("Model") then
-                    for _, subChild in ipairs(child:GetChildren()) do checkAndDestroy(subChild) end
-                end
+    for _, c in ipairs(pools) do
+        if c then
+            for _, ch in ipairs(c:GetChildren()) do
+                cd(ch)
+                if ch:IsA("Folder") or ch:IsA("Model") then for _, sc in ipairs(ch:GetChildren()) do cd(sc) end end
             end
         end
     end
 end
-
 local function handleEnemy(enemy)
     if not enemy then return end
-    local name = enemy.Name
-    if auto_destroy[name] then disableEnemy(name, true, false, false)
-    elseif auto_break[name] then disableEnemy(name, false, true, false)
-    elseif auto_disable[name] then disableEnemy(name, false, false, true) end
+    local n = enemy.Name
+    if auto_destroy[n] then disableEnemy(n, true, false, false)
+    elseif auto_break[n] then disableEnemy(n, false, true, false)
+    elseif auto_disable[n] then disableEnemy(n, false, false, true) end
 end
-
 local function purgeExistingEnemies()
     local count = 0
-    if enemies then
-        for _, enemy in ipairs(enemies:GetChildren()) do
-            if enemy.Name ~= "Guardian" then enemy:Destroy(); count += 1 end
-        end
-    end
+    if enemies then for _, e in ipairs(enemies:GetChildren()) do if e.Name ~= "Guardian" then e:Destroy(); count += 1 end end end
     return count
 end
 
 -- =====================================================================
--- ANTI VOID
+-- ANTI-VOID
 -- =====================================================================
 local function processAntiVoid()
     if not av then return end
-    local char = getChar(plr); local root = getRoot(char)
+    local root = getRoot(getChar(plr))
     local killVoid = workspace:FindFirstChild("KillVoid")
-    local voidYThreshold = killVoid and (killVoid.Position.Y + 5) or -100
-    if root and root.Position.Y <= voidYThreshold then
+    local thr = killVoid and (killVoid.Position.Y + 5) or -100
+    if root and root.Position.Y <= thr then
         if antiVoidSelection == 1 then handleSpawnNavigation()
         elseif antiVoidSelection == 2 then
             root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, lp, root.AssemblyLinearVelocity.Z)
         elseif antiVoidSelection == 3 then
             refreshGiftCache(true)
-            local giftInfo = nil; local rootPos = root.Position; local shortest = math.huge
-            for _, info in ipairs(giftCache) do
-                if info.obj and info.obj.Parent and info.part and info.part.Parent and isValidGiftPos(info.part.Position) then
-                    local dist = (info.part.Position - rootPos).Magnitude
-                    if dist < shortest then shortest = dist; giftInfo = info end
+            local best, sd = nil, math.huge
+            for _, i in ipairs(giftCache) do
+                if i.obj and i.obj.Parent and i.part and i.part.Parent and isValidGiftPos(i.part.Position) then
+                    local d = (i.part.Position - root.Position).Magnitude
+                    if d < sd then sd = d; best = i end
                 end
             end
-            if giftInfo then root.CFrame = giftInfo.part.CFrame + Vector3.new(0, 5, 0)
-            else handleSpawnNavigation() end
+            if best then root.CFrame = best.part.CFrame + Vector3.new(0, 5, 0) else handleSpawnNavigation() end
         end
     end
 end
 
--- =====================================================================
--- MAIN LOOP
--- =====================================================================
 connections["MainHeartbeat"] = RunService.Heartbeat:Connect(function()
     processProtections()
     processAntiVoid()
     checkAndVoteSelectParts()
     processAutoPylon()
     destroyRazorbloom()
-    local char = getChar(plr); local root = getRoot(char)
+    local root = getRoot(getChar(plr))
     if root and velov then
-        local velocity = root.AssemblyLinearVelocity * Vector3.new(1,0.5,1)
-        local speed = velocity.Magnitude
-        if speed > 0 then
-            local direction = velocity.Unit
-            local length = math.clamp(speed * 0.5, 0.5, 150)
-            velocityPart.Size = Vector3.new(0.2, 0.2, length)
-            velocityPart.CFrame = CFrame.lookAt((root.Position + (root.Position + direction * length)) / 2, root.Position + direction * length)
+        local vel = root.AssemblyLinearVelocity * Vector3.new(1, 0.5, 1)
+        local spd = vel.Magnitude
+        if spd > 0 then
+            local dir = vel.Unit
+            local len = math.clamp(spd * 0.5, 0.5, 150)
+            velocityPart.Size = Vector3.new(0.2, 0.2, len)
+            velocityPart.CFrame = CFrame.lookAt((root.Position + (root.Position + dir * len)) / 2, root.Position + dir * len)
             velocityPart.Transparency = 0
-            vpBox.Size = velocityPart.Size
-            vpBox.Transparency = 0.25
-        else
-            velocityPart.Transparency = 1
-            vpBox.Transparency = 1
-        end
+            vpBox.Size = velocityPart.Size; vpBox.Transparency = 0.25
+        else velocityPart.Transparency = 1; vpBox.Transparency = 1 end
     end
 end)
 table.insert(scriptConnections, connections["MainHeartbeat"])
@@ -1474,16 +1268,13 @@ local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/d
 local Loading = Library:CreateLoading({Title = "Null GUI - Java.", Icon = "7476151111", TotalSteps = 4})
 Loading:SetMessage("Initializing...")
 Loading:SetDescription("Checking environment...")
-Loading:SetCurrentStep(1)
-Loading:ShowSidebarPage(true)
-Loading.Sidebar:AddLabel("User: " .. game.Players.LocalPlayer.Name)
+Loading:SetCurrentStep(1); Loading:ShowSidebarPage(true)
+Loading.Sidebar:AddLabel("User: " .. plr.Name)
+Loading.Sidebar:AddLabel("Executor: " .. getExecutorName())
 Loading.Sidebar:AddLabel("Version: v1")
 Loading.Sidebar:AddLabel("Mode: " .. (isSupportedPlace and "Nullscape Gui" or "Universal Gui"))
-Loading:SetCurrentStep(2)
-Loading:SetCurrentStep(3)
-Loading:SetDescription("Script loaded successfully!")
-Loading:SetCurrentStep(4)
-Loading:Continue()
+Loading:SetCurrentStep(2); Loading:SetCurrentStep(3)
+Loading:SetDescription("Script loaded successfully!"); Loading:SetCurrentStep(4); Loading:Continue()
 
 local Window = Library:CreateWindow({
     Title = "Java's Null Gui",
@@ -1491,615 +1282,518 @@ local Window = Library:CreateWindow({
     Icon = "cat", Center = true, AutoShow = true,
 })
 
--- =====================================================================
--- TABS
--- =====================================================================
 local Tabs = {}
 if isSupportedPlace then
     Tabs.Playerlist = Window:AddTab("Main", "paw-print")
     Tabs.Enemies    = Window:AddTab("Enemies", "triangle-alert")
     Tabs.Map        = Window:AddTab("Map", "map")
     Tabs.Upgrades   = Window:AddTab("Upgrades", "shield-plus")
-    Tabs.Webhook    = Window:AddTab("Webhook", "webhook")  -- NEW
+    Tabs.Webhook    = Window:AddTab("Webhook", "webhook")
     Tabs.Debug      = Window:AddTab("Debug", "bug")
     Tabs.Credits    = Window:AddTab("Credits", "info")
     Tabs.Settings   = Window:AddTab("Settings", "settings")
 
-    -- =================================================================
     -- GIFTS
-    -- =================================================================
     local GiftGroup = Tabs.Playerlist:AddRightGroupbox("Gifts Collection")
     GiftGroup:AddLabel("<font color='#AAAAAA'><b>NOTE:</b> Finding gifts can be slow\n Use Instant TP for max collection.</font>")
-    GiftGroup:AddToggle("AutoStartCollectingToggle", {
-        Text = "<font color='#00FFCC'>Auto start collecting</font>",
-        Default = Settings.AutoStartCollecting,
-        Tooltip = "Automatically starts/restarts normal gift collection when SoundService.SFXFolder.NewLevel plays.",
-        Callback = function(Value)
-            Settings.AutoStartCollecting = Value
-            if Value then
-                local sfxFolder = SoundService:FindFirstChild("SFXFolder")
-                local newLevelSound = sfxFolder and sfxFolder:FindFirstChild("NewLevel")
-                if newLevelSound and newLevelSound:IsA("Sound") then
-                    if connections["AutoStartCollectingConn"] then connections["AutoStartCollectingConn"]:Disconnect() end
-                    connections["AutoStartCollectingConn"] = newLevelSound.Played:Connect(function()
-                        if Settings.AutoStartCollecting then
-                            Settings.CollectNormal = true
-                            local normalTgl = getToggle("CollectNormalToggle")
-                            if normalTgl then normalTgl:SetValue(true) end
-                            collectGiftsEngine(false)
-                            if notifOn then notif("NewLevel sound detected. Auto-started normal gift collection.", "Collection System") end
-                        end
-                    end)
-                    table.insert(scriptConnections, connections["AutoStartCollectingConn"])
-                end
-            else
-                if connections["AutoStartCollectingConn"] then
-                    connections["AutoStartCollectingConn"]:Disconnect()
-                    connections["AutoStartCollectingConn"] = nil
-                end
+    GiftGroup:AddToggle("AutoStartCollectingToggle", {Text = "<font color='#00FFCC'>Auto start collecting</font>", Default = Settings.AutoStartCollecting, Callback = function(Value)
+        Settings.AutoStartCollecting = Value
+        if Value then
+            local sfx = SoundService:FindFirstChild("SFXFolder")
+            local nls = sfx and sfx:FindFirstChild("NewLevel")
+            if nls and nls:IsA("Sound") then
+                if connections["AutoStartCollectingConn"] then connections["AutoStartCollectingConn"]:Disconnect() end
+                connections["AutoStartCollectingConn"] = nls.Played:Connect(function()
+                    if Settings.AutoStartCollecting then
+                        Settings.CollectNormal = true
+                        local t = getToggle("CollectNormalToggle"); if t then t:SetValue(true) end
+                        collectGiftsEngine(false)
+                        if notifOn then notif("NewLevel detected. Auto-collecting.", "Collection") end
+                    end
+                end)
+                table.insert(scriptConnections, connections["AutoStartCollectingConn"])
             end
+        else
+            if connections["AutoStartCollectingConn"] then connections["AutoStartCollectingConn"]:Disconnect(); connections["AutoStartCollectingConn"] = nil end
         end
-    })
-    GiftGroup:AddToggle("CollectNormalToggle", {
-        Text = "<font color='#AA55FF'>Collect Normal Gifts</font>",
-        Default = Settings.CollectNormal,
-        Tooltip = "Collects normal gifts first. If Golden is also enabled, automatically falls back to Golden when normals run out.",
-        Callback = function(Value)
-            Settings.CollectNormal = Value
-            if Value then collectGiftsEngine(false)
-            else if not Settings.CollectGolden and tweening then stopAllCollection() end end
-        end
-    })
-    GiftGroup:AddToggle("CollectGoldenToggle", {
-        Text = "<font color='#FFCC00'>Collect Golden Gifts</font>",
-        Default = Settings.CollectGolden,
-        Tooltip = "Collects Golden gifts. Works alongside Normal.",
-        Callback = function(Value)
-            Settings.CollectGolden = Value
-            if Value then
-                if not Settings.CollectNormal then collectGiftsEngine(true) else collectGiftsEngine(false) end
-            else if not Settings.CollectNormal and tweening then stopAllCollection() end end
-        end
-    })
-    GiftGroup:AddToggle("LegitCollectionToggle", {
-        Text = "<font color='#FF4444'>Legit collection (slow)</font>",
-        Default = Settings.LegitCollection,
-        Tooltip = "Uses PathfindingService to naturally walk to gifts instead of teleporting.",
-        Callback = function(Value)
-            Settings.LegitCollection = Value
-            if Value then Library:Notify("Legit Pathfinding Mode Enabled.", 2) end
-        end
-    })
+    end})
+    GiftGroup:AddToggle("CollectNormalToggle", {Text = "<font color='#AA55FF'>Collect Normal Gifts</font>", Default = Settings.CollectNormal, Callback = function(Value)
+        Settings.CollectNormal = Value
+        if Value then collectGiftsEngine(false) else if not Settings.CollectGolden and tweening then stopAllCollection() end end
+    end})
+    GiftGroup:AddToggle("CollectGoldenToggle", {Text = "<font color='#FFCC00'>Collect Golden Gifts</font>", Default = Settings.CollectGolden, Callback = function(Value)
+        Settings.CollectGolden = Value
+        if Value then
+            if not Settings.CollectNormal then collectGiftsEngine(true) else collectGiftsEngine(false) end
+        else if not Settings.CollectNormal and tweening then stopAllCollection() end end
+    end})
+    GiftGroup:AddToggle("LegitCollectionToggle", {Text = "<font color='#FF4444'>Legit collection (slow)</font>", Default = Settings.LegitCollection, Callback = function(Value)
+        Settings.LegitCollection = Value
+        if Value then Library:Notify("Legit Pathfinding Mode Enabled.", 2) end
+    end})
     GiftGroup:AddDivider("Timing")
-    GiftGroup:AddInput("LegitSpeedInput", {Default = tostring(Settings.LegitSpeed), Numeric = true, Finished = true, Text = "Legit WalkSpeed", Placeholder = "16...", Callback = function(Value)
-        local num = tonumber(Value)
-        if num and num > 0 then Settings.LegitSpeed = num; Library:Notify("Legit Speed set to " .. tostring(num), 2) end
+    GiftGroup:AddInput("LegitSpeedInput", {Default = tostring(Settings.LegitSpeed), Numeric = true, Finished = true, Text = "Legit WalkSpeed", Callback = function(V)
+        local n = tonumber(V); if n and n > 0 then Settings.LegitSpeed = n; Library:Notify("Legit Speed: " .. n, 2) end
     end})
-    GiftGroup:AddToggle("InstantTPToggle", {Text = "Instant Teleport Collection", Default = Settings.InstantTeleport, Callback = function(Value) Settings.InstantTeleport = Value end})
-    GiftGroup:AddInput("TweenSpeedInput", {Default = tostring(Settings.TweenSpeed), Numeric = true, Finished = true, Text = "Tween Speed (If TP Off)", Placeholder = "300...", Callback = function(Value)
-        local num = tonumber(Value)
-        if num and num > 0 then Settings.TweenSpeed = num; Library:Notify("Tween Speed set to " .. tostring(num), 2) end
+    GiftGroup:AddToggle("InstantTPToggle", {Text = "Instant Teleport Collection", Default = Settings.InstantTeleport, Callback = function(V) Settings.InstantTeleport = V end})
+    GiftGroup:AddInput("TweenSpeedInput", {Default = tostring(Settings.TweenSpeed), Numeric = true, Finished = true, Text = "Tween Speed", Callback = function(V)
+        local n = tonumber(V); if n and n > 0 then Settings.TweenSpeed = n end
     end})
-    GiftGroup:AddInput("TeleportDelayInput", {Default = tostring(Settings.DelayBetweenGifts), Numeric = true, Finished = true, Text = "Teleport Delay (Seconds)", Placeholder = "0.05...", Callback = function(Value)
-        local num = tonumber(Value)
-        if num and num >= 0 then Settings.DelayBetweenGifts = num; Library:Notify("Teleport Delay set to " .. tostring(num) .. "s", 2) end
+    GiftGroup:AddInput("TeleportDelayInput", {Default = tostring(Settings.DelayBetweenGifts), Numeric = true, Finished = true, Text = "Teleport Delay (s)", Callback = function(V)
+        local n = tonumber(V); if n and n >= 0 then Settings.DelayBetweenGifts = n end
     end})
     GiftGroup:AddDivider("Actions")
-    GiftGroup:AddToggle("AutoBeaconToggle", {Text = "<font color='#00FF00'>Walk/TP To Beacon On Finish</font>", Default = Settings.AutoBeacon, Callback = function(Value) Settings.AutoBeacon = Value end})
-    GiftGroup:AddButton({Text = "<font color='#FF4444'>Cancel Gift Collection</font>", Func = function() stopAllCollection(); Library:Notify("Cancelled gift collection.", 2) end})
+    GiftGroup:AddToggle("AutoBeaconToggle", {Text = "<font color='#00FF00'>Walk/TP To Beacon On Finish</font>", Default = Settings.AutoBeacon, Callback = function(V) Settings.AutoBeacon = V end})
+    GiftGroup:AddButton({Text = "<font color='#FF4444'>Cancel Gift Collection</font>", Func = function() stopAllCollection(); Library:Notify("Cancelled.", 2) end})
 
     local FarmGroup = Tabs.Playerlist:AddLeftGroupbox("Farm")
-    FarmGroup:AddToggle("AutoFarmBetaToggle", {
-        Text = "auto farm (beta)",
-        Default = Settings.AutoFarmBeta,
-        Tooltip = "Auto enables start collecting, beacon TP, and enemy deletion.",
-        Callback = function(Value)
-            Settings.AutoFarmBeta = Value
-            local autoStartTgl = getToggle("AutoStartCollectingToggle")
-            local autoBeaconTgl = getToggle("AutoBeaconToggle")
-            local collectNormalTgl = getToggle("CollectNormalToggle")
-            local deleteAllEnemiesTgl = getToggle("DeleteAllEnemies")
-            if Value then
-                if autoStartTgl then autoStartTgl:SetValue(true) else Settings.AutoStartCollecting = true end
-                if autoBeaconTgl then autoBeaconTgl:SetValue(true) else Settings.AutoBeacon = true end
-                if collectNormalTgl then collectNormalTgl:SetValue(true) else Settings.CollectNormal = true end
-                if deleteAllEnemiesTgl then deleteAllEnemiesTgl:SetValue(true) else deleteAllEnemies = true end
-                Library:Notify("Auto Farm (Beta) Enabled.", 2)
-            else
-                if autoStartTgl then autoStartTgl:SetValue(false) else Settings.AutoStartCollecting = false end
-                if autoBeaconTgl then autoBeaconTgl:SetValue(false) else Settings.AutoBeacon = false end
-                if collectNormalTgl then collectNormalTgl:SetValue(false) else Settings.CollectNormal = false end
-                if deleteAllEnemiesTgl then deleteAllEnemiesTgl:SetValue(false) else deleteAllEnemies = false end
-                Library:Notify("Auto Farm (Beta) Disabled.", 2)
-            end
+    FarmGroup:AddToggle("AutoFarmBetaToggle", {Text = "auto farm (beta)", Default = Settings.AutoFarmBeta, Callback = function(V)
+        Settings.AutoFarmBeta = V
+        local a, b, c, d = getToggle("AutoStartCollectingToggle"), getToggle("AutoBeaconToggle"), getToggle("CollectNormalToggle"), getToggle("DeleteAllEnemies")
+        if V then
+            if a then a:SetValue(true) else Settings.AutoStartCollecting = true end
+            if b then b:SetValue(true) else Settings.AutoBeacon = true end
+            if c then c:SetValue(true) else Settings.CollectNormal = true end
+            if d then d:SetValue(true) else deleteAllEnemies = true end
+            Library:Notify("Auto Farm Enabled.", 2)
+        else
+            if a then a:SetValue(false) else Settings.AutoStartCollecting = false end
+            if b then b:SetValue(false) else Settings.AutoBeacon = false end
+            if c then c:SetValue(false) else Settings.CollectNormal = false end
+            if d then d:SetValue(false) else deleteAllEnemies = false end
+            Library:Notify("Auto Farm Disabled.", 2)
         end
-    })
-    FarmGroup:AddToggle("AutoPylonToggle", {Text = "Teleport to pylon", Default = Settings.AutoPylon, Tooltip = "Teleports to and completes pylons one by one as they spawn.", Callback = function(Value)
-        Settings.AutoPylon = Value
-        if Value then Library:Notify("Auto Teleport to Pylon Enabled.", 2); teleportToNearestPylon()
-        else Library:Notify("Auto Teleport to Pylon Disabled.", 2) end
+    end})
+    FarmGroup:AddToggle("AutoPylonToggle", {Text = "Teleport to pylon", Default = Settings.AutoPylon, Callback = function(V)
+        Settings.AutoPylon = V
+        if V then Library:Notify("Auto Pylon Enabled.", 2); teleportToNearestPylon() end
     end})
     FarmGroup:AddButton({Text = "Teleport to Pylon", Func = function() teleportToNearestPylon() end})
-    FarmGroup:AddInput("TargetLevelVoidInput", {Text = "Auto Void at Level", Default = "", Numeric = true, Finished = false, Placeholder = "Target Level (e.g. 2)...", Tooltip = "Input player level to automatically teleport character into the void upon reaching it.", Callback = function(Value)
-        local num = tonumber(Value)
-        if num and num > 0 then Settings.TargetLevel = num; Library:Notify("Auto Void set for Level " .. tostring(num), 2)
-        else Settings.TargetLevel = nil; Library:Notify("Auto Void Level disabled.", 2) end
+    FarmGroup:AddInput("TargetLevelVoidInput", {Text = "Auto Void at Level", Default = "", Numeric = true, Finished = false, Placeholder = "Target Level", Callback = function(V)
+        local n = tonumber(V)
+        if n and n > 0 then Settings.TargetLevel = n; Library:Notify("Auto Void at " .. n, 2)
+        else Settings.TargetLevel = nil end
     end})
 
     local WhitelistGroup = Tabs.Playerlist:AddLeftGroupbox("Vote Whitelists")
-    WhitelistGroup:AddDropdown("EnemiesWhitelistDropdown", {Values = EnemiesList, Multi = true, Text = "Enemies Whitelist", Tooltip = "Select which Enemies to vote for.", Callback = function(Value) Settings.EnemiesWhitelist = Value end})
-    WhitelistGroup:AddDropdown("CursesWhitelistDropdown", {Values = CursesList, Multi = true, Text = "Curses Whitelist", Tooltip = "Select which Curses to vote for.", Callback = function(Value) Settings.CursesWhitelist = Value end})
-    WhitelistGroup:AddDropdown("UpgradesWhitelistDropdown", {Values = UpgradesList, Multi = true, Text = "Upgrades Whitelist", Tooltip = "Select which Upgrades to vote for.", Callback = function(Value) Settings.UpgradesWhitelist = Value end})
+    WhitelistGroup:AddDropdown("EnemiesWhitelistDropdown", {Values = EnemiesList, Multi = true, Text = "Enemies Whitelist", Callback = function(V) Settings.EnemiesWhitelist = V end})
+    WhitelistGroup:AddDropdown("CursesWhitelistDropdown", {Values = CursesList, Multi = true, Text = "Curses Whitelist", Callback = function(V) Settings.CursesWhitelist = V end})
+    WhitelistGroup:AddDropdown("UpgradesWhitelistDropdown", {Values = UpgradesList, Multi = true, Text = "Upgrades Whitelist", Callback = function(V) Settings.UpgradesWhitelist = V end})
 
     local PlayerGroup = Tabs.Playerlist:AddRightGroupbox("Player Features")
-    PlayerGroup:AddToggle("VelocityVisualizerToggle", {Text = "Velocity Visualizer", Default = false, Callback = function(Value)
-        velov = Value
-        if not Value then velocityPart.Transparency = 1; vpBox.Transparency = 1 end
+    PlayerGroup:AddToggle("VelocityVisualizerToggle", {Text = "Velocity Visualizer", Default = false, Callback = function(V)
+        velov = V
+        if not V then velocityPart.Transparency = 1; vpBox.Transparency = 1 end
     end})
-    PlayerGroup:AddToggle("DestroyRazorbloomToggle", {Text = "<font color='#FF6666'>Destroy Razorbloom (VISIBLE TO OTHERS)</font>", Default = nrb, Tooltip = "Automatically destroys Razorbloom objects from your character when they appear.", Callback = function(Value)
-        nrb = Value
-        if Value then destroyRazorbloom(); Library:Notify("Razorbloom Destroyer enabled.", 2)
-        else Library:Notify("Razorbloom Destroyer disabled.", 2) end
+    PlayerGroup:AddToggle("DestroyRazorbloomToggle", {Text = "<font color='#FF6666'>Destroy Razorbloom (VISIBLE)</font>", Default = nrb, Callback = function(V)
+        nrb = V
+        if V then destroyRazorbloom(); Library:Notify("Razorbloom Destroyer on.", 2) end
     end})
-    PlayerGroup:AddSlider("GiftCollectionRange", {Text = "Gift collection range", Default = 1, Min = 0, Max = 10, Rounding = 0, Tooltip = "Adds 30 Magnet upgrades per slider tick (0 sets magnet upgrade to 1).", Callback = function(Value)
-        local magnetAmount = (Value == 0) and 1 or (Value * 30)
-        applyUpgradeValue("GiftMagnet", magnetAmount, upgradeLabels["GiftMagnet"])
+    PlayerGroup:AddSlider("GiftCollectionRange", {Text = "Gift collection range", Default = 1, Min = 0, Max = 10, Rounding = 0, Callback = function(V)
+        applyUpgradeValue("GiftMagnet", (V == 0) and 1 or (V * 30), upgradeLabels["GiftMagnet"])
     end})
 
-    -- =================================================================
     -- ENEMIES
-    -- =================================================================
-    local EnemyActionGroup = Tabs.Enemies:AddLeftGroupbox("Enemy Controls & Utilities")
-    EnemyActionGroup:AddToggle("DisableAllEnemies", {Text = "Disable All Enemy AI", Default = false, Callback = function(Value)
-        disableAllEnemies = Value
-        if Value then
+    local EG = Tabs.Enemies:AddLeftGroupbox("Enemy Controls")
+    EG:AddToggle("DisableAllEnemies", {Text = "Disable All Enemy AI", Default = false, Callback = function(V)
+        disableAllEnemies = V
+        if V then
             if enemies then
-                for _, enemy in ipairs(enemies:GetChildren()) do disableEnemyEntity(enemy) end
-                connections["DisableEnemies"] = enemies.ChildAdded:Connect(function(child)
-                    if disableAllEnemies then task.wait(0.1); disableEnemyEntity(child) end
-                end)
+                for _, e in ipairs(enemies:GetChildren()) do disableEnemyEntity(e) end
+                connections["DisableEnemies"] = enemies.ChildAdded:Connect(function(c) if disableAllEnemies then task.wait(0.1); disableEnemyEntity(c) end end)
                 table.insert(scriptConnections, connections["DisableEnemies"])
             end
-            Library:Notify("Workspace Enemy AI disabled.", 3)
         else
             if connections["DisableEnemies"] then connections["DisableEnemies"]:Disconnect(); connections["DisableEnemies"] = nil end
-            Library:Notify("Workspace Enemy AI re-enabled.", 3)
         end
     end})
-    EnemyActionGroup:AddToggle("DisableClientEnemies", {Text = "Disable all client sided enemies", Default = false, Callback = function(Value)
-        disableClientEnemies = Value
-        if Value then
+    EG:AddToggle("DisableClientEnemies", {Text = "Disable client sided enemies", Default = false, Callback = function(V)
+        disableClientEnemies = V
+        if V then
             processClientSideEnemies()
-            connections["DisableClientEnemies"] = RunService.Heartbeat:Connect(function()
-                if disableClientEnemies then processClientSideEnemies() end
-            end)
+            connections["DisableClientEnemies"] = RunService.Heartbeat:Connect(function() if disableClientEnemies then processClientSideEnemies() end end)
             table.insert(scriptConnections, connections["DisableClientEnemies"])
-            Library:Notify("Client-sided enemies disabler activated.", 3)
         else
             if connections["DisableClientEnemies"] then connections["DisableClientEnemies"]:Disconnect(); connections["DisableClientEnemies"] = nil end
-            Library:Notify("Client-sided enemies disabler stopped.", 3)
         end
     end})
-    EnemyActionGroup:AddToggle("DeleteAllEnemies", {Text = "Delete All Enemies", Default = false, Callback = function(Value)
-        deleteAllEnemies = Value
-        if Value then
-            pb = true
-            local guardianTgl = getToggle("Guardian_Protection")
-            if guardianTgl then guardianTgl:SetValue(true) end
+    EG:AddToggle("DeleteAllEnemies", {Text = "Delete All Enemies", Default = false, Callback = function(V)
+        deleteAllEnemies = V
+        if V then
+            local g = getToggle("Guardian_Protection"); if g then g:SetValue(true) end
             if enemies then
                 purgeExistingEnemies()
-                connections["DeleteEnemies"] = enemies.ChildAdded:Connect(function(child)
-                    if deleteAllEnemies then task.defer(function()
-                        if child and child.Parent and child.Name ~= "Guardian" then child:Destroy() end
-                    end) end
+                connections["DeleteEnemies"] = enemies.ChildAdded:Connect(function(c)
+                    if deleteAllEnemies then task.defer(function() if c and c.Parent and c.Name ~= "Guardian" then c:Destroy() end end) end
                 end)
                 table.insert(scriptConnections, connections["DeleteEnemies"])
             end
-            Library:Notify("Auto-delete all enemies enabled (Guardian Protection active).", 3)
         else
             if connections["DeleteEnemies"] then connections["DeleteEnemies"]:Disconnect(); connections["DeleteEnemies"] = nil end
-            Library:Notify("Auto-delete all enemies disabled.", 3)
         end
     end})
-    EnemyActionGroup:AddDivider("Actions")
-    EnemyActionGroup:AddButton({Text = "Purge All Existing Enemies", Func = function() local count = purgeExistingEnemies(); Library:Notify("Purged " .. tostring(count) .. " enemies from workspace.", 3) end})
-    EnemyActionGroup:AddButton({Text = "Refresh Target List", Func = function() Library:Notify("Refreshed active enemy cache.", 2) end})
-    EnemyActionGroup:AddDivider("Active Enemies")
-    local activeEnemiesLabel = EnemyActionGroup:AddLabel("Scanning workspace...")
+    EG:AddDivider("Actions")
+    EG:AddButton({Text = "Purge All Enemies", Func = function() local n = purgeExistingEnemies(); Library:Notify("Purged " .. n, 3) end})
+    EG:AddDivider("Active Enemies")
+    local activeLbl = EG:AddLabel("Scanning...")
     task.spawn(function()
         while task.wait(1.5) do
-            if not enemies or #enemies:GetChildren() == 0 then
-                activeEnemiesLabel:SetText("<font color='#AAAAAA'>No active enemies</font>")
+            if not enemies or #enemies:GetChildren() == 0 then activeLbl:SetText("<font color='#AAAAAA'>No active enemies</font>")
             else
                 local lines = {}
-                for _, enemy in ipairs(enemies:GetChildren()) do
-                    local hum = enemy:FindFirstChildOfClass("Humanoid")
-                    local isDisabled = false
-                    if hum and hum.PlatformStand then isDisabled = true
-                    elseif enemy:FindFirstChildOfClass("Script") and enemy:FindFirstChildOfClass("Script").Disabled then isDisabled = true end
-                    if isDisabled then table.insert(lines, string.format("<font color='#AAAAAA'>%s (Disabled)</font>", enemy.Name))
-                    else table.insert(lines, string.format("<font color='#00FF00'>%s (Active)</font>", enemy.Name)) end
+                for _, e in ipairs(enemies:GetChildren()) do
+                    local h = e:FindFirstChildOfClass("Humanoid")
+                    local dis = false
+                    if h and h.PlatformStand then dis = true
+                    elseif e:FindFirstChildOfClass("Script") and e:FindFirstChildOfClass("Script").Disabled then dis = true end
+                    table.insert(lines, dis and string.format("<font color='#AAAAAA'>%s (Disabled)</font>", e.Name) or string.format("<font color='#00FF00'>%s (Active)</font>", e.Name))
                 end
-                activeEnemiesLabel:SetText(table.concat(lines, "\n"))
+                activeLbl:SetText(table.concat(lines, "\n"))
             end
         end
     end)
     task.spawn(function() while task.wait(1) do processPortedDisables() end end)
 
-    local DetailedEnemyGroup = Tabs.Enemies:AddRightGroupbox("Granular Enemy Options")
-    task.spawn(function()
-        while task.wait(1) do
-            if enemies then for _, enemy in ipairs(enemies:GetChildren()) do handleEnemy(enemy) end end
-        end
-    end)
+    local DEG = Tabs.Enemies:AddRightGroupbox("Granular Enemy Options")
+    task.spawn(function() while task.wait(1) do if enemies then for _, e in ipairs(enemies:GetChildren()) do handleEnemy(e) end end end end)
     if enemies then
-        connections["GranularChildAdded"] = enemies.ChildAdded:Connect(function(child) task.wait(0.1); handleEnemy(child) end)
+        connections["GranularChildAdded"] = enemies.ChildAdded:Connect(function(c) task.wait(0.1); handleEnemy(c) end)
         table.insert(scriptConnections, connections["GranularChildAdded"])
     end
-    local function addDetailedEnemy(group, name)
-        group:AddDivider(name)
-        if auto_disable[name] ~= nil then
-            group:AddToggle(name.."_Disable", {Text = "Auto Disable", Default = auto_disable[name], Callback = function(v) auto_disable[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end})
-        end
-        if auto_break[name] ~= nil then
-            group:AddToggle(name.."_Break", {Text = "Auto Break AI", Default = auto_break[name], Callback = function(v) auto_break[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end})
-        end
-        if auto_destroy[name] ~= nil then
-            group:AddToggle(name.."_Destroy", {Text = "Auto Destroy", Default = auto_destroy[name], Callback = function(v) auto_destroy[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end})
-        end
+    local function addEnemy(g, n)
+        g:AddDivider(n)
+        if auto_disable[n] ~= nil then g:AddToggle(n.."_Disable", {Text = "Auto Disable", Default = auto_disable[n], Callback = function(v) auto_disable[n] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(n)) end end}) end
+        if auto_break[n] ~= nil then g:AddToggle(n.."_Break", {Text = "Auto Break AI", Default = auto_break[n], Callback = function(v) auto_break[n] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(n)) end end}) end
+        if auto_destroy[n] ~= nil then g:AddToggle(n.."_Destroy", {Text = "Auto Destroy", Default = auto_destroy[n], Callback = function(v) auto_destroy[n] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(n)) end end}) end
     end
-    addDetailedEnemy(DetailedEnemyGroup, "Bell")
-    addDetailedEnemy(DetailedEnemyGroup, "Mart")
-    addDetailedEnemy(DetailedEnemyGroup, "Skinwalker")
-    addDetailedEnemy(DetailedEnemyGroup, "Springer")
-    addDetailedEnemy(DetailedEnemyGroup, "ICBM")
-    addDetailedEnemy(DetailedEnemyGroup, "Baby")
-    addDetailedEnemy(DetailedEnemyGroup, "Flesh")
-    DetailedEnemyGroup:AddDivider("Guardian Options")
-    DetailedEnemyGroup:AddToggle("Guardian_Immunity", {Text = "Guardian Death Immunity", Default = false, Tooltip = "Blocks server death registration when killed by Guardian.", Callback = function(Value)
-        guardianImmunity = Value
-        Library:Notify("Guardian Immunity " .. (Value and "Enabled" or "Disabled"), 2)
+    for _, n in ipairs({"Bell","Mart","Skinwalker","Springer","ICBM","Baby","Flesh"}) do addEnemy(DEG, n) end
+    DEG:AddDivider("Guardian Options")
+    DEG:AddToggle("Guardian_Immunity", {Text = "Guardian Death Immunity", Default = false, Callback = function(V) guardianImmunity = V; Library:Notify("Guardian Immunity " .. (V and "ON" or "OFF"), 2) end})
+    DEG:AddToggle("Shadow_Guardian_Immunity", {Text = "Shadow Guardian Death Immunity", Default = false, Callback = function(V) voidboundGuardianImmunity = V; Library:Notify("Shadow Guardian Immunity " .. (V and "ON" or "OFF"), 2) end})
+    DEG:AddToggle("Guardian_Protection", {Text = "Bullet Protection Sphere", Default = pb, Callback = function(V)
+        pb = V
+        if not V then for _, d in pairs(activeBulletProtections) do if d.sphere then d.sphere:Destroy() end end; table.clear(activeBulletProtections) end
     end})
-    DetailedEnemyGroup:AddToggle("Shadow_Guardian_Immunity", {Text = "Shadow Guardian Death Immunity", Default = false, Tooltip = "Blocks server death registration when killed by Shadow Guardian.", Callback = function(Value)
-        voidboundGuardianImmunity = Value
-        Library:Notify("Shadow Guardian Immunity " .. (Value and "Enabled" or "Disabled"), 2)
-    end})
-    DetailedEnemyGroup:AddToggle("Guardian_Protection", {Text = "Create Bullet Protection Sphere", Default = pb, Callback = function(Value)
-        pb = Value
-        if not Value then
-            for _, d in pairs(activeBulletProtections) do if d.sphere then d.sphere:Destroy() end end
-            table.clear(activeBulletProtections)
-        end
-    end})
-    addDetailedEnemy(DetailedEnemyGroup, "Operator")
-    addDetailedEnemy(DetailedEnemyGroup, "Kolona")
-    addDetailedEnemy(DetailedEnemyGroup, "Telefragger")
-    addDetailedEnemy(DetailedEnemyGroup, "Sigil")
-    addDetailedEnemy(DetailedEnemyGroup, "Voidbreaker")
-    addDetailedEnemy(DetailedEnemyGroup, "Cadence")
-    addDetailedEnemy(DetailedEnemyGroup, "ShadowBaby")
-    addDetailedEnemy(DetailedEnemyGroup, "Scrapmaw")
-    addDetailedEnemy(DetailedEnemyGroup, "RealityBreak")
-    addDetailedEnemy(DetailedEnemyGroup, "Celestial")
+    for _, n in ipairs({"Operator","Kolona","Telefragger","Sigil","Voidbreaker","Cadence","ShadowBaby","Scrapmaw","RealityBreak","Celestial"}) do addEnemy(DEG, n) end
 
-    -- =================================================================
     -- MAP
-    -- =================================================================
-    local VoidGroup = Tabs.Map:AddLeftGroupbox("Void")
-    VoidGroup:AddToggle("AntiVoid", {Text = "Anti Void", Default = false, Callback = function(Value) av = Value end})
-    VoidGroup:AddDropdown("AntiVoidSetting", {Values = {"1. Teleport to Spawn", "2. Launch Up", "3. Closest Gift"}, Default = 1, Multi = false, Text = "Anti Void Setting", Callback = function(Value) antiVoidSelection = tonumber(string.split(Value, ".")[1]) end})
-    VoidGroup:AddSlider("LaunchPower", {Text = "Launch Power", Default = 500, Min = 10, Max = 1000, Rounding = 0, Callback = function(Value) lp = Value end})
-    VoidGroup:AddToggle("VisibleVoid", {Text = "Visible Void", Default = false, Callback = function(Value) local killVoid = workspace:FindFirstChild("KillVoid"); if killVoid then killVoid.Transparency = Value and 0 or 1 end end})
-
-    local MapProtectionGroup = Tabs.Map:AddRightGroupbox("Map Defenses")
-    MapProtectionGroup:AddDivider("Protection Spheres")
-    MapProtectionGroup:AddToggle("Tripmine_Protection", {Text = "Tripmine Safe Sphere Protection", Default = pt, Callback = function(Value)
-        pt = Value
-        if not Value then
-            for _, d in pairs(activeTripmineProtections) do if d.sphere then d.sphere:Destroy() end end
-            table.clear(activeTripmineProtections)
-        end
+    local VG = Tabs.Map:AddLeftGroupbox("Void")
+    VG:AddToggle("AntiVoid", {Text = "Anti Void", Default = false, Callback = function(V) av = V end})
+    VG:AddDropdown("AntiVoidSetting", {Values = {"1. Teleport to Spawn", "2. Launch Up", "3. Closest Gift"}, Default = 1, Multi = false, Callback = function(V) antiVoidSelection = tonumber(string.split(V, ".")[1]) end})
+    VG:AddSlider("LaunchPower", {Text = "Launch Power", Default = 500, Min = 10, Max = 1000, Rounding = 0, Callback = function(V) lp = V end})
+    VG:AddToggle("VisibleVoid", {Text = "Visible Void", Default = false, Callback = function(V)
+        local kv = workspace:FindFirstChild("KillVoid"); if kv then kv.Transparency = V and 0 or 1 end
     end})
-    MapProtectionGroup:AddDivider("Tiles")
-    MapProtectionGroup:AddToggle("AntiFleshIceTiles", {Text = "Anti flesh tiles/ ice tiles (tile connection)", Default = false, Callback = function(Value) antiFleshTilesEnabled = Value; applyTileConnections() end})
-    MapProtectionGroup:AddToggle("PersistentTileConnections", {Text = "Persistent tile connections", Default = false, Callback = function(Value)
-        persistentTileConnections = Value
-        if Value then
+
+    local MP = Tabs.Map:AddRightGroupbox("Map Defenses")
+    MP:AddToggle("Tripmine_Protection", {Text = "Tripmine Safe Sphere", Default = pt, Callback = function(V)
+        pt = V
+        if not V then for _, d in pairs(activeTripmineProtections) do if d.sphere then d.sphere:Destroy() end end; table.clear(activeTripmineProtections) end
+    end})
+    MP:AddToggle("AntiFleshIceTiles", {Text = "Anti flesh/ice tiles", Default = false, Callback = function(V) antiFleshTilesEnabled = V; applyTileConnections() end})
+    MP:AddToggle("PersistentTileConnections", {Text = "Persistent tile connections", Default = false, Callback = function(V)
+        persistentTileConnections = V
+        if V then
             if not persistentRespawnConnection then
-                persistentRespawnConnection = plr.CharacterAdded:Connect(function()
-                    task.wait(1)
-                    if persistentTileConnections and antiFleshTilesEnabled then applyTileConnections() end
-                end)
+                persistentRespawnConnection = plr.CharacterAdded:Connect(function() task.wait(1); if persistentTileConnections and antiFleshTilesEnabled then applyTileConnections() end end)
             end
         else
             if persistentRespawnConnection then persistentRespawnConnection:Disconnect(); persistentRespawnConnection = nil end
         end
     end})
-    MapProtectionGroup:AddDivider("Extra Disables")
-    MapProtectionGroup:AddToggle("DisableSeaMines", {Text = "Disable Sea Mines", Default = false, Callback = function(Value) disableSeaMines = Value end})
-    MapProtectionGroup:AddToggle("DisableVoidImplosions", {Text = "Disable Void Implosions", Default = false, Callback = function(Value) disableVoidImplosions = Value end})
-    MapProtectionGroup:AddToggle("DisableFakeBeacons", {Text = "Disable Fake Beacons", Default = false, Callback = function(Value) disableFakeBeacons = Value end})
-    MapProtectionGroup:AddToggle("DisableOblivion", {Text = "Disable Oblivion", Default = false, Callback = function(Value) disableOblivion = Value end})
+    MP:AddDivider("Extra Disables")
+    MP:AddToggle("DisableSeaMines", {Text = "Disable Sea Mines", Default = false, Callback = function(V) disableSeaMines = V end})
+    MP:AddToggle("DisableVoidImplosions", {Text = "Disable Void Implosions", Default = false, Callback = function(V) disableVoidImplosions = V end})
+    MP:AddToggle("DisableFakeBeacons", {Text = "Disable Fake Beacons", Default = false, Callback = function(V) disableFakeBeacons = V end})
+    MP:AddToggle("DisableOblivion", {Text = "Disable Oblivion", Default = false, Callback = function(V) disableOblivion = V end})
 
-    -- =================================================================
     -- UPGRADES
-    -- =================================================================
-    local upgradeTabLeft = Tabs.Upgrades:AddLeftGroupbox("Upgrades Status")
-    if upgradeTabLeft.Container then upgradeTabLeft.Container.AutomaticSize = Enum.AutomaticSize.Y end
-    if fSignal then upgradeTabLeft:AddLabel("Your exploit can add upgrades.")
-    else upgradeTabLeft:AddLabel("Your exploit currently doesn't support adding upgrades.") end
-    upgradeTabLeft:AddDivider("Active Upgrades List")
-    local activeUpgradesLabel = upgradeTabLeft:AddLabel("None Active")
-    local clientUpgrades = {"MatrixTetrahedron", "Adrenaline", "HighlightGifts", "AdvancedGravityCoil", "SportShoes", "TheOrb", "RealWings", "GraceWings", "RadarPlayer", "RadarInstruments", "HighlightTripmines", "IceSkates", "SwiftnessRing", "GiftMagnet", "SharkTail", "EnemyOnTop", "PocketBell", "NinjaBelt", "Helmet", "DoubleJump", "RadarAltars"}
-
+    local UL = Tabs.Upgrades:AddLeftGroupbox("Upgrades Status")
+    if UL.Container then UL.Container.AutomaticSize = Enum.AutomaticSize.Y end
+    if fSignal then UL:AddLabel("Your exploit supports adding upgrades.") else UL:AddLabel("Your exploit doesn't support adding upgrades.") end
+    UL:AddDivider("Active Upgrades List")
+    local activeUpLbl = UL:AddLabel("None Active")
+    local clientUpgrades = {"MatrixTetrahedron","Adrenaline","HighlightGifts","AdvancedGravityCoil","SportShoes","TheOrb","RealWings","GraceWings","RadarPlayer","RadarInstruments","HighlightTripmines","IceSkates","SwiftnessRing","GiftMagnet","SharkTail","EnemyOnTop","PocketBell","NinjaBelt","Helmet","DoubleJump","RadarAltars"}
     updateActiveUpgradesDisplay = function()
-        local textParts = {}
-        for name, val in pairs(activeUpgrades) do
-            if val > 0 then table.insert(textParts, string.format("<font color='#0055ff'>%s</font>: %d", name, val)) end
+        local parts = {}
+        for n, v in pairs(activeUpgrades) do if v > 0 then table.insert(parts, string.format("<font color='#0055ff'>%s</font>: %d", n, v)) end end
+        local full = #parts > 0 and table.concat(parts, "\n") or "None Active"
+        if activeUpLbl and type(activeUpLbl) == "table" and activeUpLbl.TextLabel then
+            activeUpLbl.TextLabel.AutomaticSize = Enum.AutomaticSize.Y
+            activeUpLbl.TextLabel.TextWrapped = true
         end
-        local fullText = #textParts > 0 and table.concat(textParts, "\n") or "None Active"
-        if activeUpgradesLabel and type(activeUpgradesLabel) == "table" and activeUpgradesLabel.TextLabel then
-            activeUpgradesLabel.TextLabel.AutomaticSize = Enum.AutomaticSize.Y
-            activeUpgradesLabel.TextLabel.TextWrapped = true
-        end
-        activeUpgradesLabel:SetText(fullText)
+        activeUpLbl:SetText(full)
     end
-
-    local function setupUpgradeGuardian(intv, name)
-        if upgradeValueGuards[name] then upgradeValueGuards[name]:Disconnect(); upgradeValueGuards[name] = nil end
-        upgradeValueGuards[name] = intv.Changed:Connect(function(newValue)
-            if isSettingGuardValue[name] then return end
-            local desiredValue = activeUpgrades[name]
-            if desiredValue and newValue ~= desiredValue then
-                isSettingGuardValue[name] = true; intv.Value = desiredValue; isSettingGuardValue[name] = false
-            end
+    local function setupGuard(intv, n)
+        if upgradeValueGuards[n] then upgradeValueGuards[n]:Disconnect(); upgradeValueGuards[n] = nil end
+        upgradeValueGuards[n] = intv.Changed:Connect(function(v)
+            if isSettingGuardValue[n] then return end
+            local want = activeUpgrades[n]
+            if want and v ~= want then isSettingGuardValue[n] = true; intv.Value = want; isSettingGuardValue[n] = false end
         end)
-        table.insert(scriptConnections, upgradeValueGuards[name])
+        table.insert(scriptConnections, upgradeValueGuards[n])
     end
-
-    applyUpgradeValue = function(name, targetValue, uLabel)
-        local upgradesFolder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
-        local intv = upgradesFolder and upgradesFolder:FindFirstChild(name)
-        targetValue = math.max(0, math.floor(targetValue or 0))
-        if targetValue > 0 then
-            activeUpgrades[name] = targetValue
-            if intv then isSettingGuardValue[name] = true; intv.Value = targetValue; isSettingGuardValue[name] = false
-            else
-                intv = Instance.new("IntValue"); intv.Name = name; intv.Value = targetValue
-                if upgradesFolder then intv.Parent = upgradesFolder end
-            end
-            setupUpgradeGuardian(intv, name)
+    applyUpgradeValue = function(n, tv, lbl)
+        local folder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
+        local intv = folder and folder:FindFirstChild(n)
+        tv = math.max(0, math.floor(tv or 0))
+        if tv > 0 then
+            activeUpgrades[n] = tv
+            if intv then isSettingGuardValue[n] = true; intv.Value = tv; isSettingGuardValue[n] = false
+            else intv = Instance.new("IntValue"); intv.Name = n; intv.Value = tv; if folder then intv.Parent = folder end end
+            setupGuard(intv, n)
             if events and events:FindFirstChild("UpgradesChanged") then
                 pcall(function()
-                    if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, {[name] = targetValue}) end
-                    if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({[name] = targetValue}) end
+                    if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, {[n] = tv}) end
+                    if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({[n] = tv}) end
                 end)
             end
         else
-            activeUpgrades[name] = nil
+            activeUpgrades[n] = nil
             if intv then intv:Destroy() end
-            if upgradeValueGuards[name] then upgradeValueGuards[name]:Disconnect(); upgradeValueGuards[name] = nil end
+            if upgradeValueGuards[n] then upgradeValueGuards[n]:Disconnect(); upgradeValueGuards[n] = nil end
             if events and events:FindFirstChild("UpgradesChanged") then
                 pcall(function()
-                    if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, {[name] = 0}) end
-                    if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({[name] = 0}) end
+                    if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, {[n] = 0}) end
+                    if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({[n] = 0}) end
                 end)
             end
         end
-        if uLabel then uLabel:SetText("Current: " .. tostring(targetValue)) end
+        if lbl then lbl:SetText("Current: " .. tv) end
         updateActiveUpgradesDisplay()
     end
-
-    local function restoreAllUpgrades()
-        local upgradeFolderParent = ReplicatedStorage:FindFirstChild("UpgradeFolder")
-        local upgradesFolder = upgradeFolderParent and upgradeFolderParent:FindFirstChild("Upgrades")
-        for name, value in pairs(activeUpgrades) do
-            if value > 0 and upgradesFolder then
-                local intv = upgradesFolder:FindFirstChild(name)
-                if not intv then intv = Instance.new("IntValue"); intv.Name = name; intv.Parent = upgradesFolder end
-                isSettingGuardValue[name] = true; intv.Value = value; isSettingGuardValue[name] = false
-                setupUpgradeGuardian(intv, name)
+    local function restoreAll()
+        local folder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
+        for n, v in pairs(activeUpgrades) do
+            if v > 0 and folder then
+                local intv = folder:FindFirstChild(n)
+                if not intv then intv = Instance.new("IntValue"); intv.Name = n; intv.Parent = folder end
+                isSettingGuardValue[n] = true; intv.Value = v; isSettingGuardValue[n] = false
+                setupGuard(intv, n)
                 if events and events:FindFirstChild("UpgradesChanged") then
                     pcall(function()
-                        if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, {[name] = value}) end
-                        if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({[name] = value}) end
+                        if fSignal then fSignal(events.UpgradesChanged.OnClientEvent, {[n] = v}) end
+                        if events.UpgradesChanged:IsA("RemoteEvent") then events.UpgradesChanged:FireServer({[n] = v}) end
                     end)
                 end
             end
         end
         updateActiveUpgradesDisplay()
     end
-
-    local charUpgradeConn = plr.CharacterAdded:Connect(function(newChar) task.wait(1); restoreAllUpgrades() end)
-    table.insert(scriptConnections, charUpgradeConn)
-
-    local upgradeListGroup = Tabs.Upgrades:AddRightGroupbox("Available Upgrades")
+    local cc = plr.CharacterAdded:Connect(function() task.wait(1); restoreAll() end)
+    table.insert(scriptConnections, cc)
+    local ULG = Tabs.Upgrades:AddRightGroupbox("Available Upgrades")
     for _, u in ipairs(clientUpgrades) do
-        upgradeListGroup:AddDivider(u)
-        local initialVal = 0
-        local upgradesFolder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
-        local existingInt = upgradesFolder and upgradesFolder:FindFirstChild(u)
-        if existingInt then
-            initialVal = existingInt.Value
-            if initialVal > 0 then activeUpgrades[u] = initialVal; setupUpgradeGuardian(existingInt, u) end
-        end
-        local uLabel = upgradeListGroup:AddLabel("Current: " .. tostring(initialVal))
-        upgradeLabels[u] = uLabel
-        upgradeListGroup:AddInput(u .. "_Input", {Default = tostring(initialVal), Numeric = true, Finished = true, Text = "Set Amount", Placeholder = "Amount...", Callback = function(Value) local num = tonumber(Value) if num then applyUpgradeValue(u, num, uLabel) end end})
-        upgradeListGroup:AddButton({Text = "Add One (" .. u .. ")", Func = function() local current = activeUpgrades[u] or initialVal; applyUpgradeValue(u, current + 1, uLabel) end})
-        upgradeListGroup:AddButton({Text = "Remove One (" .. u .. ")", Func = function() local current = activeUpgrades[u] or initialVal; applyUpgradeValue(u, current - 1, uLabel) end})
+        ULG:AddDivider(u)
+        local init = 0
+        local folder = ReplicatedStorage:FindFirstChild("UpgradeFolder") and ReplicatedStorage.UpgradeFolder:FindFirstChild("Upgrades")
+        local ex = folder and folder:FindFirstChild(u)
+        if ex then init = ex.Value; if init > 0 then activeUpgrades[u] = init; setupGuard(ex, u) end end
+        local lbl = ULG:AddLabel("Current: " .. init)
+        upgradeLabels[u] = lbl
+        ULG:AddInput(u .. "_Input", {Default = tostring(init), Numeric = true, Finished = true, Text = "Set Amount", Callback = function(V)
+            local n = tonumber(V); if n then applyUpgradeValue(u, n, lbl) end
+        end})
+        ULG:AddButton({Text = "Add One (" .. u .. ")", Func = function() local c = activeUpgrades[u] or init; applyUpgradeValue(u, c + 1, lbl) end})
+        ULG:AddButton({Text = "Remove One (" .. u .. ")", Func = function() local c = activeUpgrades[u] or init; applyUpgradeValue(u, c - 1, lbl) end})
     end
     updateActiveUpgradesDisplay()
 
     -- =================================================================
-    -- WEBHOOK TAB (NEW)
+    -- WEBHOOK TAB
     -- =================================================================
-    local WebhookConfigGroup = Tabs.Webhook:AddLeftGroupbox("Discord Webhook")
+    local WCG = Tabs.Webhook:AddLeftGroupbox("Discord Webhook")
 
-    WebhookConfigGroup:AddLabel("<font color='#AAAAAA'>Paste a Discord webhook URL below. Level-change and death payloads are pushed to this URL when their toggles are on.</font>")
+    WCG:AddLabel("<font color='#AAAAAA'>Paste a Discord webhook URL. Click the URL box and press Enter to confirm.</font>")
 
-    WebhookConfigGroup:AddInput("WebhookURLInput", {
+    WCG:AddInput("WebhookURLInput", {
         Default = "",
-        Finished = false,
+        Finished = true,   -- require Enter / blur so URL isn't captured mid-type
         Text = "Discord Webhook URL",
         Placeholder = "https://discord.com/api/webhooks/...",
         Callback = function(Value)
-            Webhook.URL = tostring(Value or "")
+            if type(Value) == "table" then Value = Value[1] or "" end
+            Webhook.URL = tostring(Value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+            if Library then
+                if Webhook.URL == "" then
+                    Library:Notify("Webhook URL cleared.", 2)
+                else
+                    local ok, err = isValidWebhookURL()
+                    Library:Notify(ok and "Webhook URL saved." or ("URL warning: " .. tostring(err)), ok and 2 or 4)
+                end
+            end
         end
     })
 
-    WebhookConfigGroup:AddDivider("Notification Triggers")
+    WCG:AddDivider("Notification Triggers")
 
-    WebhookConfigGroup:AddToggle("WebhookLevelToggle", {
+    WCG:AddToggle("WebhookLevelToggle", {
         Text = "<font color='#00FF88'>Notify on new level</font>",
         Default = false,
-        Tooltip = "Sends a webhook whenever a new level is detected (same LogService detection used by the script's Auto-Void feature).",
-        Callback = function(Value)
-            Webhook.LevelEnabled = Value
-        end
+        Tooltip = "Sends a webhook whenever a new level is detected (uses the same LogService hook as Auto-Void).",
+        Callback = function(Value) Webhook.LevelEnabled = Value end
     })
 
-    WebhookConfigGroup:AddToggle("WebhookDeathToggle", {
+    WCG:AddToggle("WebhookDeathToggle", {
         Text = "<font color='#FF4444'>Notify on death</font>",
         Default = false,
         Tooltip = "Sends a webhook whenever the local player dies.",
+        Callback = function(Value) Webhook.DeathEnabled = Value end
+    })
+
+    WCG:AddDivider("Auto Period Report")
+
+    WCG:AddToggle("WebhookAutoToggle", {
+        Text = "<font color='#00AAFF'>Auto-send period report</font>",
+        Default = false,
+        Tooltip = "Sends a status webhook on a fixed interval.",
         Callback = function(Value)
-            Webhook.DeathEnabled = Value
+            Webhook.AutoEnabled = Value
+            Webhook.LastAutoSendTime = os.clock()
+            if Value then Library:Notify(string.format("Auto report every %d min.", Webhook.AutoIntervalMinutes), 2)
+            else Library:Notify("Auto report disabled.", 2) end
         end
     })
 
-    WebhookConfigGroup:AddDivider("Manual Actions")
+    WCG:AddSlider("WebhookAutoIntervalSlider", {
+        Text = "Auto-send interval (minutes)",
+        Default = 5,
+        Min = 1,
+        Max = 60,
+        Rounding = 0,
+        Tooltip = "How often the auto-send fires. Max 60 minutes.",
+        Callback = function(Value)
+            Webhook.AutoIntervalMinutes = Value
+            Webhook.LastAutoSendTime = os.clock()
+        end
+    })
 
-    WebhookConfigGroup:AddButton({
+    WCG:AddDivider("Manual Actions")
+
+    WCG:AddButton({
         Text = "<font color='#00AAFF'>Send Test / Current Info</font>",
         Func = function()
             local ok, err = isValidWebhookURL()
-            if not ok then Library:Notify("Webhook error: " .. tostring(err), 4); return end
-            local embed = {
-                title = "🔔 Test Webhook",
-                description = "Manual test payload from Java's Null GUI.",
-                color = 0x00AAFF,
-                fields = buildWebhookFields(),
-                timestamp = DateTime.now():ToIsoDate(),
-                footer = {text = "Java's Null GUI | Test"},
-            }
-            local success, res = dispatchWebhook({username = "Null GUI", embeds = {embed}})
-            if success then Library:Notify("Test webhook sent.", 2)
-            else Library:Notify("Failed to send: " .. tostring(res), 4) end
+            if not ok then Library:Notify("Webhook config error: " .. tostring(err), 5); return end
+            local success, info = dispatchWebhook({
+                username = "Null GUI",
+                embeds = {{
+                    title = "🔔 Test Webhook",
+                    description = "Manual test payload from Java's Null GUI.",
+                    color = 0x00AAFF,
+                    fields = buildWebhookFields(),
+                    timestamp = getTimestamp(),
+                    footer = {text = "Java's Null GUI | Test"},
+                }}
+            })
+            if success then Library:Notify("✅ Test webhook sent: " .. tostring(info), 3)
+            else Library:Notify("❌ Failed: " .. tostring(info), 8) end
         end
     })
 
-    WebhookConfigGroup:AddButton({
+    WCG:AddButton({
         Text = "Send Death Webhook (Test)",
         Func = function()
             local ok, err = isValidWebhookURL()
-            if not ok then Library:Notify("Webhook error: " .. tostring(err), 4); return end
-            local success, res = dispatchDeathWebhook()
-            if success then Library:Notify("Death test webhook sent.", 2)
-            else Library:Notify("Failed: " .. tostring(res), 4) end
+            if not ok then Library:Notify("Webhook config error: " .. tostring(err), 5); return end
+            local success, info = dispatchDeathWebhook()
+            if success then Library:Notify("✅ Death test sent: " .. tostring(info), 3)
+            else Library:Notify("❌ Failed: " .. tostring(info), 8) end
         end
     })
 
-    local WebhookInfoGroup = Tabs.Webhook:AddRightGroupbox("Webhook Info")
+    WCG:AddButton({
+        Text = "Send Periodic Report (Test)",
+        Func = function()
+            local ok, err = isValidWebhookURL()
+            if not ok then Library:Notify("Webhook config error: " .. tostring(err), 5); return end
+            local success, info = dispatchPeriodicWebhook()
+            if success then Library:Notify("✅ Report sent: " .. tostring(info), 3)
+            else Library:Notify("❌ Failed: " .. tostring(info), 8) end
+        end
+    })
 
-    WebhookInfoGroup:AddLabel("<font color='#AAAAAA'>Every webhook payload includes:</font>")
-    WebhookInfoGroup:AddLabel("• <b>Current Level</b>")
-    WebhookInfoGroup:AddLabel("• <b>Active Enemies</b> (with [Disabled] / [Client] tags)")
-    WebhookInfoGroup:AddLabel("• <b>Active Upgrades</b> with counts")
-    WebhookInfoGroup:AddLabel("• Timestamp & session footer")
+    local WIG = Tabs.Webhook:AddRightGroupbox("Webhook Info")
+    WIG:AddLabel("<font color='#AAAAAA'>Every payload includes:</font>")
+    WIG:AddLabel("• Player name & display name")
+    WIG:AddLabel("• Executor name")
+    WIG:AddLabel("• Current level + levels gained this session")
+    WIG:AddLabel("• Session uptime")
+    WIG:AddLabel("• Game name & place ID")
+    WIG:AddLabel("• Active enemies & active upgrades")
+    WIG:AddLabel("• Timestamp & footer")
 
-    WebhookInfoGroup:AddDivider("Live Status")
-    local webhookStatusLabel = WebhookInfoGroup:AddLabel("Status: Idle")
-
+    WIG:AddDivider("Live Status")
+    local wStatus = WIG:AddLabel("Status: Idle")
     task.spawn(function()
         while task.wait(1) do
-            if webhookStatusLabel then
+            if wStatus then
                 local lines = {
                     "URL Set: " .. (Webhook.URL ~= "" and "<font color='#00FF00'>Yes</font>" or "<font color='#FF6666'>No</font>"),
                     "Level Trigger: " .. (Webhook.LevelEnabled and "<font color='#00FF00'>ON</font>" or "<font color='#AAAAAA'>OFF</font>"),
                     "Death Trigger: " .. (Webhook.DeathEnabled and "<font color='#00FF00'>ON</font>" or "<font color='#AAAAAA'>OFF</font>"),
-                    "Last Sent Level: " .. tostring(Webhook.LastSentLevel or "N/A"),
-                    "Last Observed Level: " .. tostring(currentObservedLevel or "N/A"),
+                    "Auto Trigger: " .. (Webhook.AutoEnabled and ("<font color='#00FF00'>" .. Webhook.AutoIntervalMinutes .. " min</font>") or "<font color='#AAAAAA'>OFF</font>"),
+                    "Levels This Session: " .. tostring(Webhook.LevelsGained),
+                    "Current Level: " .. tostring(currentObservedLevel or "N/A"),
+                    "Uptime: " .. getSessionUptime(),
+                    "Last Response: " .. Webhook.LastResponse,
                 }
-                webhookStatusLabel:SetText(table.concat(lines, "\n"))
+                wStatus:SetText(table.concat(lines, "\n"))
             end
         end
     end)
-
 else
-    -- =================================================================
-    -- UNIVERSAL MODE
-    -- =================================================================
     Tabs.UniversalMain = Window:AddTab("Main - Universal", "globe")
     Tabs.Debug         = Window:AddTab("Debug", "bug")
     Tabs.Credits       = Window:AddTab("Credits", "info")
     Tabs.Settings      = Window:AddTab("Settings", "settings")
 
-    local UniversalGroup = Tabs.UniversalMain:AddLeftGroupbox("Universal Features")
-    UniversalGroup:AddSlider("WalkSpeedSlider", {Text = "WalkSpeed", Default = 16, Min = 16, Max = 250, Rounding = 0, Callback = function(Value)
-        if plr.Character and plr.Character:FindFirstChildOfClass("Humanoid") then plr.Character:FindFirstChildOfClass("Humanoid").WalkSpeed = Value end
+    local UG = Tabs.UniversalMain:AddLeftGroupbox("Universal Features")
+    UG:AddSlider("WalkSpeedSlider", {Text = "WalkSpeed", Default = 16, Min = 16, Max = 250, Rounding = 0, Callback = function(V)
+        if plr.Character and plr.Character:FindFirstChildOfClass("Humanoid") then plr.Character:FindFirstChildOfClass("Humanoid").WalkSpeed = V end
     end})
-    UniversalGroup:AddSlider("JumpPowerSlider", {Text = "JumpPower", Default = 50, Min = 50, Max = 500, Rounding = 0, Callback = function(Value)
-        if plr.Character and plr.Character:FindFirstChildOfClass("Humanoid") then plr.Character:FindFirstChildOfClass("Humanoid").JumpPower = Value end
+    UG:AddSlider("JumpPowerSlider", {Text = "JumpPower", Default = 50, Min = 50, Max = 500, Rounding = 0, Callback = function(V)
+        if plr.Character and plr.Character:FindFirstChildOfClass("Humanoid") then plr.Character:FindFirstChildOfClass("Humanoid").JumpPower = V end
     end})
 
-    local TeleportGroup = Tabs.UniversalMain:AddRightGroupbox("Utilities")
-    local function getPlayerNames()
-        local list = {}
-        for _, p in ipairs(Players:GetPlayers()) do if p ~= plr then table.insert(list, p.Name) end end
-        return list
-    end
-    local selectedPlayer = nil
-    TeleportGroup:AddDropdown("TargetPlayerDropdown", {Text = "Select Player to TP", Values = getPlayerNames(), Default = 1, Callback = function(Value) selectedPlayer = Value end})
-    TeleportGroup:AddButton({Text = "Refresh Player List", Func = function() if Options and Options.TargetPlayerDropdown then Options.TargetPlayerDropdown:SetValues(getPlayerNames()) end end})
-    TeleportGroup:AddButton({Text = "Teleport to Player", Func = function()
-        if selectedPlayer then
-            local targetPlr = Players:FindFirstChild(selectedPlayer)
-            if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
-                plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame
-                Library:Notify("Teleported to " .. selectedPlayer, 3)
+    local TG = Tabs.UniversalMain:AddRightGroupbox("Utilities")
+    local function names() local l = {} for _, p in ipairs(Players:GetPlayers()) do if p ~= plr then table.insert(l, p.Name) end end return l end
+    local sel = nil
+    TG:AddDropdown("TargetPlayerDropdown", {Text = "Player", Values = names(), Default = 1, Callback = function(V) sel = V end})
+    TG:AddButton({Text = "Refresh", Func = function() if Options and Options.TargetPlayerDropdown then Options.TargetPlayerDropdown:SetValues(names()) end end})
+    TG:AddButton({Text = "Teleport to Player", Func = function()
+        if sel then
+            local tp = Players:FindFirstChild(sel)
+            if tp and tp.Character and tp.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+                plr.Character.HumanoidRootPart.CFrame = tp.Character.HumanoidRootPart.CFrame
+                Library:Notify("Teleported to " .. sel, 3)
             end
         end
     end})
-    TeleportGroup:AddButton({Text = "Rejoin Server", Func = function() TeleportService:TeleportToPlaceInstance(PlaceId, JobId, plr) end})
-    TeleportGroup:AddButton({Text = "Server Hop", Func = function()
-        local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")) end)
-        if success and servers and servers.data then
-            for _, server in ipairs(servers.data) do
-                if server.playing < server.maxPlayers and server.id ~= JobId then
-                    TeleportService:TeleportToPlaceInstance(PlaceId, server.id, plr); return
-                end
-            end
-        end
-        Library:Notify("Failed to find a server.", 3)
-    end})
+    TG:AddButton({Text = "Rejoin Server", Func = function() TeleportService:TeleportToPlaceInstance(PlaceId, JobId, plr) end})
 end
 
--- =====================================================================
--- CREDITS / DEBUG
--- =====================================================================
-local ContributorsGroup = Tabs.Credits:AddLeftGroupbox("Contributors")
-ContributorsGroup:AddLabel("<font color='#FFA500'>kaoru_zz</font>; Guardians anti-kill")
-ContributorsGroup:AddLabel("<font color='#FFA500'>(Ali)zeja</font> Main script, Huge inspiration!")
-local DevelopersGroup = Tabs.Credits:AddRightGroupbox("Developers")
-DevelopersGroup:AddLabel("<font color='#AA55FF'>Java (.html4)</font> Main Developer")
+local CG = Tabs.Credits:AddLeftGroupbox("Contributors")
+CG:AddLabel("<font color='#FFA500'>kaoru_zz</font>; Guardians anti-kill")
+CG:AddLabel("<font color='#FFA500'>(Ali)zeja</font> Main script, Huge inspiration!")
+local DG = Tabs.Credits:AddRightGroupbox("Developers")
+DG:AddLabel("<font color='#AA55FF'>Java (.html4)</font> Main Developer")
 
-local DebugGroup = Tabs.Debug:AddLeftGroupbox("Debug Actions")
-DebugGroup:AddButton({Text = "Log Select Attributes", Func = function() logSelectAttributes(); Library:Notify("Logged board attributes to console/file.", 3) end})
-DebugGroup:AddButton({Text = "Unload GUI", Func = function()
+local DBG = Tabs.Debug:AddLeftGroupbox("Debug Actions")
+DBG:AddButton({Text = "Log Select Attributes", Func = function() logSelectAttributes(); Library:Notify("Logged attributes.", 3) end})
+DBG:AddButton({Text = "Unload GUI", Func = function()
     if _G.NullGui_Cleanup and type(_G.NullGui_Cleanup) == "function" then pcall(_G.NullGui_Cleanup) end
     if velocityPart and velocityPart.Parent then pcall(function() velocityPart:Destroy() end) end
     if protectionFolder and protectionFolder.Parent then pcall(function() protectionFolder:Destroy() end) end
     if Library and type(Library.Unload) == "function" then pcall(function() Library:Unload() end) end
 end})
-
-local DebugInfoGroup = Tabs.Debug:AddRightGroupbox("Session State")
-local levelLabel = DebugInfoGroup:AddLabel("Current Observed Level: N/A")
-local connLabel = DebugInfoGroup:AddLabel("Active Connections: " .. tostring(#scriptConnections))
+local DIB = Tabs.Debug:AddRightGroupbox("Session State")
+local lvlLbl = DIB:AddLabel("Current Level: N/A")
+local connLbl = DIB:AddLabel("Connections: " .. #scriptConnections)
 task.spawn(function()
     while task.wait(1) do
-        if levelLabel then levelLabel:SetText("Current Observed Level: " .. tostring(currentObservedLevel or "N/A")) end
-        if connLabel then connLabel:SetText("Active Connections: " .. tostring(#scriptConnections)) end
+        if lvlLbl then lvlLbl:SetText("Current Level: " .. tostring(currentObservedLevel or "N/A")) end
+        if connLbl then connLbl:SetText("Connections: " .. #scriptConnections) end
     end
 end)
 
