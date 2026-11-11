@@ -1014,7 +1014,7 @@ local function processProtections()
 end
 
 --------------------------------------------------------------------
--- Gift Collection & AI Defenses Logic (Enhanced Universal Detection)
+-- Gift Collection 
 --------------------------------------------------------------------
 local Library
 
@@ -1038,7 +1038,7 @@ local function refreshGifts(normal, golden)
         if nameLower:find("gift") or nameLower:find("present") then
             local isGolden = (nameLower:find("golden") ~= nil or nameLower:find("gold") ~= nil)
             local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true) or (obj.IsA and obj:IsA("Model") and obj.PrimaryPart)
-            
+
             if part then
                 if isGolden then
                     if golden then table.insert(availableGoldenGifts, obj) end
