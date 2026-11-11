@@ -39,7 +39,6 @@ local SoundService = game:GetService("SoundService")
 local PlaceId, JobId = game.PlaceId, game.JobId 
 local plr = Players.LocalPlayer
 
--- Fetch Game Name via MarketplaceService Async (Non-Blocking)
 local gameName = "Unknown Game"
 task.spawn(function()
     pcall(function()
@@ -50,10 +49,8 @@ task.spawn(function()
     end)
 end)
 
--- Place ID Check (Set to true by default to bypass game restriction)
 local isSupportedPlace = true
 
--- Signal Fallbacks for Executors
 local fSignal = firesignal or fire_signal or fireSignal
 if not fSignal and getgenv then
     fSignal = getgenv().firesignal or getgenv().fire_signal or getgenv().fireSig
@@ -210,6 +207,8 @@ local currentTween = nil
 local activePath = nil
 local availableNormalGifts = {}
 local availableGoldenGifts = {}
+
+local collectionRunId = 0
 
 local notifOn = true
 local destroying = false
@@ -1014,7 +1013,7 @@ local function processProtections()
 end
 
 --------------------------------------------------------------------
--- Gift Collection 
+-- Gift Collection (v5 — notification de-spam + anti-repeat)
 --------------------------------------------------------------------
 local Library
 
@@ -1024,74 +1023,123 @@ local function notif(msg, title)
     end
 end
 
-local function refreshGifts(normal, golden)
-    table.clear(availableNormalGifts)
-    table.clear(availableGoldenGifts)
+local giftCache = {}
+local giftCacheBuilt = false
+local lastFullScan = 0
+local FULL_SCAN_INTERVAL = 1.2
+local GIFT_Y_MIN = -2000
+local GIFT_Y_MAX = 5000
+local GIFT_DIST_MAX = 60000
 
-    local checkedObjects = {}
+local collectedGifts = {}
+local COLLECTED_TIMEOUT = 8
 
-    local function inspectObj(obj)
-        if not obj or checkedObjects[obj] or not obj.Parent then return end
-        checkedObjects[obj] = true
+local function classifyGift(obj)
+    if not obj or not obj.Parent then return nil end
+    local nameLower = obj.Name:lower()
+    if not (nameLower:find("gift") or nameLower:find("present")) then return nil end
 
-        local nameLower = obj.Name:lower()
-        if nameLower:find("gift") or nameLower:find("present") then
-            local isGolden = (nameLower:find("golden") ~= nil or nameLower:find("gold") ~= nil)
-            local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true) or (obj.IsA and obj:IsA("Model") and obj.PrimaryPart)
+    local part = obj:IsA("BasePart") and obj
+              or obj:FindFirstChildWhichIsA("BasePart", true)
+              or (obj.IsA and obj:IsA("Model") and obj.PrimaryPart)
+    if not part then return nil end
 
-            if part then
-                if isGolden then
-                    if golden then table.insert(availableGoldenGifts, obj) end
-                else
-                    if normal then table.insert(availableNormalGifts, obj) end
-                end
-            end
-        end
-    end
+    local isGolden = (nameLower:find("golden") ~= nil) or (nameLower:find("gold") ~= nil)
+    return { obj = obj, part = part, isGolden = isGolden }
+end
 
-    -- Deep workspace & CurrentRooms recursive search to catch gifts anywhere in the map
-    local searchRoots = {
+local function rebuildGiftCache()
+    local newCache = {}
+    local roots = {
         workspace:FindFirstChild("Item_Pools"),
         workspace:FindFirstChild("CurrentRooms"),
         workspace:FindFirstChild("Gifts"),
         workspace:FindFirstChild("SpawnedGifts"),
-        workspace
     }
 
-    for _, container in ipairs(searchRoots) do
-        if container then
-            inspectObj(container)
-            for _, child in ipairs(container:GetDescendants()) do
-                inspectObj(child)
+    local function scan(container)
+        if not container then return end
+        for _, child in ipairs(container:GetDescendants()) do
+            local info = classifyGift(child)
+            if info then
+                newCache[#newCache + 1] = info
             end
+        end
+    end
+
+    for _, root in ipairs(roots) do
+        scan(root)
+    end
+
+    for _, child in ipairs(workspace:GetChildren()) do
+        local info = classifyGift(child)
+        if info then
+            newCache[#newCache + 1] = info
+        end
+    end
+
+    giftCache = newCache
+    giftCacheBuilt = true
+    lastFullScan = os.clock()
+end
+
+local function pruneCache()
+    local pruned = {}
+    local present = {}
+    for _, info in ipairs(giftCache) do
+        if info.obj and info.obj.Parent and info.part and info.part.Parent then
+            pruned[#pruned + 1] = info
+            present[info.obj] = true
+        end
+    end
+    giftCache = pruned
+
+    local now = os.clock()
+    for gift, ts in pairs(collectedGifts) do
+        if not present[gift] or (now - ts) > COLLECTED_TIMEOUT then
+            collectedGifts[gift] = nil
         end
     end
 end
 
-local function getClosestGift(giftList)
+local function refreshGiftCache(forceFull)
+    if forceFull or not giftCacheBuilt or (os.clock() - lastFullScan) >= FULL_SCAN_INTERVAL then
+        rebuildGiftCache()
+    end
+    pruneCache()
+end
+
+local function isValidGiftPos(pos)
+    if pos == Vector3.new(0,0,0) then return false end
+    if pos.Y < GIFT_Y_MIN or pos.Y > GIFT_Y_MAX then return false end
+    if pos.Magnitude > GIFT_DIST_MAX then return false end
+    return true
+end
+
+local function getClosestGift(targetGolden, blacklist)
     local char = getChar(plr)
     local root = getRoot(char)
     if not root then return nil end
 
-    local closest, shortestDist = nil, math.huge
-    for _, gift in ipairs(giftList) do
-        if gift and gift.Parent and not blacklistedGifts[gift] then
-            local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart", true) or (gift.IsA and gift:IsA("Model") and gift.PrimaryPart)
-            if part then
-                if part.Position == Vector3.new(0,0,0) or part.Position.Y < -500 or part.Position.Y > 3000 or part.Position.Magnitude > 30000 then
-                    blacklistedGifts[gift] = true
-                    continue
-                end
+    local rootPos = root.Position
+    local closest, closestInfo, shortest = nil, nil, math.huge
 
-                local dist = (part.Position - root.Position).Magnitude
-                if dist < shortestDist then
-                    shortestDist = dist
-                    closest = gift
+    for _, info in ipairs(giftCache) do
+        if info.obj and info.obj.Parent and info.part and info.part.Parent then
+            if info.isGolden == targetGolden and not blacklist[info.obj] and not collectedGifts[info.obj] then
+                local pos = info.part.Position
+                if isValidGiftPos(pos) then
+                    local dist = (pos - rootPos).Magnitude
+                    if dist < shortest then
+                        shortest = dist
+                        closest = info.obj
+                        closestInfo = info
+                    end
                 end
             end
         end
     end
-    return closest
+    return closest, closestInfo
 end
 
 local function walkToPositionPathfinding(targetPos)
@@ -1106,12 +1154,12 @@ local function walkToPositionPathfinding(targetPos)
         AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentJumpHeight = 10, AgentMaxSlope = 45
     })
 
-    local success, err = pcall(function() path:ComputeAsync(root.Position, targetPos) end)
+    local success = pcall(function() path:ComputeAsync(root.Position, targetPos) end)
     if success and path.Status == Enum.PathStatus.Success then
         local waypoints = path:GetWaypoints()
-        for i, waypoint in ipairs(waypoints) do
+        for _, waypoint in ipairs(waypoints) do
             if not tweening and not Settings.AutoBeacon then
-                humanoid:MoveTo(root.Position) 
+                humanoid:MoveTo(root.Position)
                 return false
             end
             if waypoint.Action == Enum.PathWaypointAction.Jump then humanoid.Jump = true end
@@ -1123,7 +1171,7 @@ local function walkToPositionPathfinding(targetPos)
             while not moveCompleted and (tweening or Settings.AutoBeacon) do
                 task.wait(0.05)
                 timeout += 0.05
-                if timeout > 3 then break end 
+                if timeout > 3 then break end
             end
             conn:Disconnect()
             if not moveCompleted then break end
@@ -1136,29 +1184,27 @@ local function walkToPositionPathfinding(targetPos)
     end
 end
 
-local function walkToGiftPathfinding(targetGift)
-    local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart", true) or (targetGift.IsA and targetGift:IsA("Model") and targetGift.PrimaryPart)
-    if not targetPart or targetPart.Position == Vector3.new(0,0,0) then return false end
-    return walkToPositionPathfinding(targetPart.Position)
-end
+local function moveToGift(info)
+    if not info or not info.part or not info.part.Parent then return nil end
 
-local function moveToGift(targetGift)
     if Settings.LegitCollection then
-        walkToGiftPathfinding(targetGift)
+        walkToPositionPathfinding(info.part.Position)
         return nil
     end
+
     local char = getChar(plr)
     local root = getRoot(char)
-    local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart", true) or (targetGift.IsA and targetGift:IsA("Model") and targetGift.PrimaryPart)
-    if not root or not targetPart or targetPart.Position == Vector3.new(0,0,0) then return nil end
-    local targetCFrame = targetPart.CFrame + Vector3.new(0, 3, 0)
+    if not root then return nil end
+
+    local targetCFrame = info.part.CFrame + Vector3.new(0, 3, 0)
 
     if Settings.InstantTeleport then
         root.CFrame = targetCFrame
+        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
         return nil
     end
 
-    local distance = (targetPart.Position - root.Position).Magnitude
+    local distance = (info.part.Position - root.Position).Magnitude
     local duration = math.max(0.01, distance / Settings.TweenSpeed)
     local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
     local tween = TweenService:Create(root, tweenInfo, {CFrame = targetCFrame})
@@ -1167,34 +1213,34 @@ local function moveToGift(targetGift)
 end
 
 local function handleSpawnNavigation()
-    local spawnNames = {"Spawn", "SpawnLocation"}
-    for _, sName in ipairs(spawnNames) do
+    for _, sName in ipairs({"Spawn", "SpawnLocation"}) do
         local targetSpawn = workspace:FindFirstChild(sName)
         if targetSpawn and targetSpawn:IsA("BasePart") and targetSpawn.Position ~= Vector3.new(0,0,0) then
             local char = getChar(plr)
             local root = getRoot(char)
             if root then
-                if Settings.LegitCollection then 
+                if Settings.LegitCollection then
                     walkToPositionPathfinding(targetSpawn.Position)
-                else 
-                    root.CFrame = targetSpawn.CFrame + Vector3.new(0, 5, 0) 
+                else
+                    root.CFrame = targetSpawn.CFrame + Vector3.new(0, 5, 0)
+                    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
                 end
                 return true
             end
         end
     end
-
     return false
 end
 
 local function stopAllCollection()
+    collectionRunId += 1
     tweening = false
     Settings.CollectNormal = false
     Settings.CollectGolden = false
     Settings.LegitCollection = false
 
     if currentTween then
-        currentTween:Cancel()
+        pcall(function() currentTween:Cancel() end)
         currentTween = nil
     end
 
@@ -1208,76 +1254,226 @@ local function stopAllCollection()
     if legitToggle then legitToggle:SetValue(false) end
 end
 
-collectGiftsEngine = function(isGoldenTarget)
-    if tweening then
-        return
-    end
+if collectGift then
+    pcall(function()
+        if collectGift:IsA("RemoteEvent") then
+            local conn = collectGift.OnClientEvent:Connect(function(...)
+                local args = {...}
+                for _, arg in ipairs(args) do
+                    if typeof(arg) == "Instance" then
+                        collectedGifts[arg] = os.clock()
+                        blacklistedGifts[arg] = true
+                    end
+                end
+            end)
+            table.insert(scriptConnections, conn)
+        elseif collectGift:IsA("BindableEvent") then
+            local conn = collectGift.Event:Connect(function(...)
+                local args = {...}
+                for _, arg in ipairs(args) do
+                    if typeof(arg) == "Instance" then
+                        collectedGifts[arg] = os.clock()
+                        blacklistedGifts[arg] = true
+                    end
+                end
+            end)
+            table.insert(scriptConnections, conn)
+        end
+    end)
+end
+
+local function startCollectionEngine(mode)
+    collectionRunId += 1
+    local myRunId = collectionRunId
     tweening = true
-    table.clear(blacklistedGifts) 
+
+    table.clear(blacklistedGifts)
 
     task.spawn(function()
-        local failedAttempts = 0
-        while tweening do
-            if isGoldenTarget and not Settings.CollectGolden then break end
-            if not isGoldenTarget and not Settings.CollectNormal then break end
+        local recentAttempts = {}
+        local ATTEMPT_COOLDOWN = 0.5
+        local emptyStreak = 0
+        local MAX_EMPTY_STREAK = 4
+        local currentTarget = mode == "golden" and "golden" or "normal"
+        local fallbackNotified = false
+        local noGiftsNotified = false
+
+        refreshGiftCache(true)
+
+        local function currentRunIsStale()
+            return myRunId ~= collectionRunId
+        end
+
+        local function targetAvailable(isGolden)
+            for _, info in ipairs(giftCache) do
+                if info.isGolden == isGolden and info.obj and info.obj.Parent and info.part and info.part.Parent then
+                    if isValidGiftPos(info.part.Position) and not collectedGifts[info.obj] then
+                        return true
+                    end
+                end
+            end
+            return false
+        end
+
+        local function doFallbackToGolden()
+            if fallbackNotified then return end
+            fallbackNotified = true
+            if notifOn then notif("No normal gifts left. Falling back to Golden Gifts.", "Collection System") end
+        end
+
+        local function doGiveUp(reasonGolden)
+            if noGiftsNotified then return end
+            noGiftsNotified = true
+            if reasonGolden then
+                if notifOn then notif("No Golden Gifts remaining. Disabling gift collection.", "Collection System") end
+            else
+                if notifOn then notif("No gifts available. Disabling gift collection.", "Collection System") end
+            end
+            if Settings.AutoBeacon then handleSpawnNavigation() end
+            stopAllCollection()
+        end
+
+        while tweening and not currentRunIsStale() do
+            local wantNormal = Settings.CollectNormal
+            local wantGolden = Settings.CollectGolden
+            if not wantNormal and not wantGolden then break end
+
+            if mode == "golden" then
+                currentTarget = "golden"
+            elseif mode == "normal" then
+                currentTarget = "normal"
+            else
+                if not wantNormal then
+                    currentTarget = "golden"
+                elseif not wantGolden then
+                    currentTarget = "normal"
+                else
+                    if currentTarget == "normal" and not targetAvailable(false) then
+                        doFallbackToGolden()
+                        currentTarget = "golden"
+                    end
+                end
+            end
+
+            local isGoldenTarget = (currentTarget == "golden")
+
+            if not targetAvailable(isGoldenTarget) then
+                local otherGolden = not isGoldenTarget
+                if targetAvailable(otherGolden) then
+                    if mode == "auto" then
+                        if currentTarget == "normal" then
+                            doFallbackToGolden()
+                        end
+                        currentTarget = otherGolden and "golden" or "normal"
+                        isGoldenTarget = otherGolden
+                    end
+                else
+                    emptyStreak += 1
+                    if emptyStreak >= MAX_EMPTY_STREAK then
+                        doGiveUp(isGoldenTarget)
+                        return
+                    end
+                    task.wait(0.15)
+                    continue
+                end
+            end
 
             local char = getChar(plr)
             local root = getRoot(char)
-            if root and not Settings.LegitCollection then 
-                root.AssemblyLinearVelocity = Vector3.new(0,0,0) 
-            end
-
-            refreshGifts(not isGoldenTarget, isGoldenTarget)
-            local targetPool = isGoldenTarget and availableGoldenGifts or availableNormalGifts
-            local gift = getClosestGift(targetPool)
-
-            if not gift then
-                failedAttempts += 1
-                if not isGoldenTarget then
-                    if failedAttempts >= 3 or #availableNormalGifts == 0 then
-                        if notifOn then notif("No normal gifts left. Switching to Golden Gifts.", "Collection System") end
-                        Settings.CollectNormal = false
-
-                        local normalTgl = getToggle("CollectNormalToggle")
-                        if normalTgl then normalTgl:SetValue(false) end
-
-                        Settings.CollectGolden = true
-                        local goldenTgl = getToggle("CollectGoldenToggle")
-                        if goldenTgl then goldenTgl:SetValue(true) end
-
-                        tweening = false
-                        task.defer(function() collectGiftsEngine(true) end)
-                        return
-                    end
-                else
-                    if failedAttempts >= 3 or #availableGoldenGifts == 0 then
-                        if notifOn then notif("No Golden Gifts remaining. Disabling gift collection.", "Collection System") end
-                        if Settings.AutoBeacon then handleSpawnNavigation() end
-                        stopAllCollection()
-                        break
-                    end
-                end
-                task.wait(0.5) 
-                table.clear(blacklistedGifts) 
+            if not root then
+                task.wait(0.2)
                 continue
             end
 
-            failedAttempts = 0
-            blacklistedGifts[gift] = true
-            currentTween = moveToGift(gift)
+            if not Settings.LegitCollection then
+                root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            end
+
+            refreshGiftCache(false)
+            if currentRunIsStale() then break end
+
+            local now = os.clock()
+            for obj, t in pairs(recentAttempts) do
+                if now - t > ATTEMPT_COOLDOWN then
+                    recentAttempts[obj] = nil
+                end
+            end
+
+            local gift, giftInfo = getClosestGift(isGoldenTarget, recentAttempts)
+
+            if not gift then
+                emptyStreak += 1
+                if emptyStreak >= MAX_EMPTY_STREAK then
+                    if mode == "auto" then
+                        local otherGolden = not isGoldenTarget
+                        if targetAvailable(otherGolden) then
+                            if currentTarget == "normal" then
+                                doFallbackToGolden()
+                            end
+                            currentTarget = otherGolden and "golden" or "normal"
+                            emptyStreak = 0
+                        else
+                            doGiveUp(isGoldenTarget)
+                            return
+                        end
+                    else
+                        doGiveUp(isGoldenTarget)
+                        return
+                    end
+                end
+                task.wait(0.12)
+                continue
+            end
+
+            emptyStreak = 0
+            recentAttempts[gift] = os.clock()
+
+            currentTween = moveToGift(giftInfo)
 
             if currentTween then
-                currentTween.Completed:Wait()
-            elseif not Settings.LegitCollection then
-                RunService.Heartbeat:Wait()
+                local tweenDone = false
+                local tweenConn
+                tweenConn = currentTween.Completed:Connect(function()
+                    tweenDone = true
+                end)
+                local timeout = 0
+                while not tweenDone and tweening and not currentRunIsStale() do
+                    task.wait(0.02)
+                    timeout += 0.02
+                    if timeout > 3 then break end
+                end
+                if tweenConn then tweenConn:Disconnect() end
+                currentTween = nil
+            else
+                task.wait(0.03)
+            end
+
+            if currentRunIsStale() then break end
+
+            if gift and gift.Parent then
+                collectedGifts[gift] = os.clock()
+            end
+            if gift then
+                recentAttempts[gift] = os.clock()
             end
 
             if Settings.DelayBetweenGifts and Settings.DelayBetweenGifts > 0 then
                 task.wait(Settings.DelayBetweenGifts)
             end
         end
-        stopAllCollection()
+
+        if not currentRunIsStale() then
+            stopAllCollection()
+        end
     end)
+end
+
+collectGiftsEngine = function(isGoldenTarget)
+    if isGoldenTarget then
+        startCollectionEngine("golden")
+    else
+        startCollectionEngine("auto")
+    end
 end
 
 local function disableEnemyEntity(entity)
@@ -1405,12 +1601,21 @@ local function processAntiVoid()
         elseif antiVoidSelection == 2 then
             root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, lp, root.AssemblyLinearVelocity.Z)
         elseif antiVoidSelection == 3 then
-            refreshGifts(true, true)
-            local targetPool = #availableNormalGifts > 0 and availableNormalGifts or availableGoldenGifts
-            local gift = getClosestGift(targetPool)
-            if gift then
-                local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart", true) or (gift.IsA and gift:IsA("Model") and gift.PrimaryPart)
-                if part then root.CFrame = part.CFrame + Vector3.new(0, 5, 0) end
+            refreshGiftCache(true)
+            local giftInfo = nil
+            local rootPos = root.Position
+            local shortest = math.huge
+            for _, info in ipairs(giftCache) do
+                if info.obj and info.obj.Parent and info.part and info.part.Parent and isValidGiftPos(info.part.Position) then
+                    local dist = (info.part.Position - rootPos).Magnitude
+                    if dist < shortest then
+                        shortest = dist
+                        giftInfo = info
+                    end
+                end
+            end
+            if giftInfo then
+                root.CFrame = giftInfo.part.CFrame + Vector3.new(0, 5, 0)
             else
                 handleSpawnNavigation()
             end
@@ -1492,9 +1697,6 @@ if isSupportedPlace then
     Tabs.Credits    = Window:AddTab("Credits", "info")
     Tabs.Settings   = Window:AddTab("Settings", "settings")
 
-    --------------------------------------------------------------------
-    -- Gifts Collection Groupbox
-    --------------------------------------------------------------------
     local GiftGroup = Tabs.Playerlist:AddRightGroupbox("Gifts Collection")
 
     GiftGroup:AddLabel("<font color='#AAAAAA'><b>NOTE:</b> Finding gifts can be slow\n Use Instant TP for max collection.</font>")
@@ -1515,7 +1717,6 @@ if isSupportedPlace then
                             Settings.CollectNormal = true
                             local normalTgl = getToggle("CollectNormalToggle")
                             if normalTgl then normalTgl:SetValue(true) end
-                            if tweening then stopAllCollection(); task.wait(0.1) end
                             collectGiftsEngine(false)
                             if notifOn then notif("NewLevel sound detected. Auto-started normal gift collection.", "Collection System") end
                         end
@@ -1534,17 +1735,15 @@ if isSupportedPlace then
     GiftGroup:AddToggle("CollectNormalToggle", {
         Text = "<font color='#AA55FF'>Collect Normal Gifts</font>",
         Default = Settings.CollectNormal,
+        Tooltip = "Collects normal gifts first. If Golden is also enabled, automatically falls back to Golden when normals run out.",
         Callback = function(Value)
             Settings.CollectNormal = Value
             if Value then
-                if Settings.CollectGolden then
-                    Settings.CollectGolden = false
-                    local goldenTgl = getToggle("CollectGoldenToggle")
-                    if goldenTgl then goldenTgl:SetValue(false) end
-                end
                 collectGiftsEngine(false)
             else
-                if not Settings.CollectGolden and tweening then stopAllCollection() end
+                if not Settings.CollectGolden and tweening then
+                    stopAllCollection()
+                end
             end
         end
     })
@@ -1552,17 +1751,19 @@ if isSupportedPlace then
     GiftGroup:AddToggle("CollectGoldenToggle", {
         Text = "<font color='#FFCC00'>Collect Golden Gifts</font>",
         Default = Settings.CollectGolden,
+        Tooltip = "Collects Golden gifts. Works alongside Normal — if both are on, Golden is used as the fallback.",
         Callback = function(Value)
             Settings.CollectGolden = Value
             if Value then
-                if Settings.CollectNormal then
-                    Settings.CollectNormal = false
-                    local normalTgl = getToggle("CollectNormalToggle")
-                    if normalTgl then normalTgl:SetValue(false) end
+                if not Settings.CollectNormal then
+                    collectGiftsEngine(true)
+                else
+                    collectGiftsEngine(false)
                 end
-                collectGiftsEngine(true)
             else
-                if not Settings.CollectNormal and tweening then stopAllCollection() end
+                if not Settings.CollectNormal and tweening then
+                    stopAllCollection()
+                end
             end
         end
     })
@@ -1577,6 +1778,8 @@ if isSupportedPlace then
         end
     })
 
+    GiftGroup:AddDivider("Timing")
+
     GiftGroup:AddInput("LegitSpeedInput", {
         Default = tostring(Settings.LegitSpeed), Numeric = true, Finished = true, Text = "Legit WalkSpeed",
         Placeholder = "16...", Callback = function(Value)
@@ -1585,8 +1788,6 @@ if isSupportedPlace then
         end
     })
 
-    GiftGroup:AddToggle("AutoBeaconToggle", { Text = "<font color='#00FF00'>Walk/TP To Beacon On Finish</font>", Default = Settings.AutoBeacon, Callback = function(Value) Settings.AutoBeacon = Value end })
-    GiftGroup:AddButton({ Text = "<font color='#FF4444'>Cancel Gift Collection</font>", Func = function() stopAllCollection(); Library:Notify("Cancelled gift collection.", 2) end })
     GiftGroup:AddToggle("InstantTPToggle", { Text = "Instant Teleport Collection", Default = Settings.InstantTeleport, Callback = function(Value) Settings.InstantTeleport = Value end })
 
     GiftGroup:AddInput("TweenSpeedInput", {
@@ -1605,9 +1806,11 @@ if isSupportedPlace then
         end
     })
 
-    --------------------------------------------------------------------
-    -- Farm Groupbox & Select Whitelists
-    --------------------------------------------------------------------
+    GiftGroup:AddDivider("Actions")
+
+    GiftGroup:AddToggle("AutoBeaconToggle", { Text = "<font color='#00FF00'>Walk/TP To Beacon On Finish</font>", Default = Settings.AutoBeacon, Callback = function(Value) Settings.AutoBeacon = Value end })
+    GiftGroup:AddButton({ Text = "<font color='#FF4444'>Cancel Gift Collection</font>", Func = function() stopAllCollection(); Library:Notify("Cancelled gift collection.", 2) end })
+
     local FarmGroup = Tabs.Playerlist:AddLeftGroupbox("Farm")
 
     FarmGroup:AddToggle("AutoFarmBetaToggle", {
@@ -1639,13 +1842,6 @@ if isSupportedPlace then
         end
     })
 
-    FarmGroup:AddButton({
-        Text = "Teleport to Pylon",
-        Func = function()
-            teleportToNearestPylon()
-        end
-    })
-
     FarmGroup:AddToggle("AutoPylonToggle", {
         Text = "Teleport to pylon",
         Default = Settings.AutoPylon,
@@ -1658,6 +1854,13 @@ if isSupportedPlace then
             else
                 Library:Notify("Auto Teleport to Pylon Disabled.", 2)
             end
+        end
+    })
+
+    FarmGroup:AddButton({
+        Text = "Teleport to Pylon",
+        Func = function()
+            teleportToNearestPylon()
         end
     })
 
@@ -1680,7 +1883,9 @@ if isSupportedPlace then
         end
     })
 
-    FarmGroup:AddDropdown("EnemiesWhitelistDropdown", {
+    local WhitelistGroup = Tabs.Playerlist:AddLeftGroupbox("Vote Whitelists")
+
+    WhitelistGroup:AddDropdown("EnemiesWhitelistDropdown", {
         Values = EnemiesList,
         Multi = true,
         Text = "Enemies Whitelist",
@@ -1690,7 +1895,7 @@ if isSupportedPlace then
         end
     })
 
-    FarmGroup:AddDropdown("CursesWhitelistDropdown", {
+    WhitelistGroup:AddDropdown("CursesWhitelistDropdown", {
         Values = CursesList,
         Multi = true,
         Text = "Curses Whitelist",
@@ -1700,7 +1905,7 @@ if isSupportedPlace then
         end
     })
 
-    FarmGroup:AddDropdown("UpgradesWhitelistDropdown", {
+    WhitelistGroup:AddDropdown("UpgradesWhitelistDropdown", {
         Values = UpgradesList,
         Multi = true,
         Text = "Upgrades Whitelist",
@@ -1710,7 +1915,8 @@ if isSupportedPlace then
         end
     })
 
-    local PlayerGroup = Tabs.Playerlist:AddLeftGroupbox("Main Features")
+    local PlayerGroup = Tabs.Playerlist:AddRightGroupbox("Player Features")
+
     PlayerGroup:AddToggle("VelocityVisualizerToggle", {
         Text = "Velocity Visualizer",
         Default = false,
@@ -1756,10 +1962,9 @@ if isSupportedPlace then
         end
     })
 
-    -- Enemies Tab
-    local EnemyControlGroup = Tabs.Enemies:AddLeftGroupbox("AI & Entity Disabler")
+    local EnemyActionGroup = Tabs.Enemies:AddLeftGroupbox("Enemy Controls & Utilities")
 
-    EnemyControlGroup:AddToggle("DisableAllEnemies", {
+    EnemyActionGroup:AddToggle("DisableAllEnemies", {
         Text = "Disable All Enemy AI", Default = false,
         Callback = function(Value)
             disableAllEnemies = Value
@@ -1779,7 +1984,7 @@ if isSupportedPlace then
         end
     })
 
-    EnemyControlGroup:AddToggle("DisableClientEnemies", {
+    EnemyActionGroup:AddToggle("DisableClientEnemies", {
         Text = "Disable all client sided enemies", Default = false,
         Callback = function(Value)
             disableClientEnemies = Value
@@ -1797,7 +2002,7 @@ if isSupportedPlace then
         end
     })
 
-    EnemyControlGroup:AddToggle("DeleteAllEnemies", {
+    EnemyActionGroup:AddToggle("DeleteAllEnemies", {
         Text = "Delete All Enemies", Default = Settings.DeleteAllEnemies,
         Callback = function(Value)
             deleteAllEnemies = Value
@@ -1824,16 +2029,14 @@ if isSupportedPlace then
         end
     })
 
-    task.spawn(function()
-        while task.wait(1) do processPortedDisables() end
-    end)
+    EnemyActionGroup:AddDivider("Actions")
 
-    local EnemyActionGroup = Tabs.Enemies:AddRightGroupbox("Actions & Utilities")
     EnemyActionGroup:AddButton({ Text = "Purge All Existing Enemies", Func = function() local count = purgeExistingEnemies(); Library:Notify("Purged " .. tostring(count) .. " enemies from workspace.", 3) end })
     EnemyActionGroup:AddButton({ Text = "Refresh Target List", Func = function() Library:Notify("Refreshed active enemy cache.", 2) end })
 
-    local ActiveEnemiesGroup = Tabs.Enemies:AddRightGroupbox("Active Enemies")
-    local activeEnemiesLabel = ActiveEnemiesGroup:AddLabel("Scanning workspace...")
+    EnemyActionGroup:AddDivider("Active Enemies")
+
+    local activeEnemiesLabel = EnemyActionGroup:AddLabel("Scanning workspace...")
 
     task.spawn(function()
         while task.wait(1.5) do
@@ -1860,7 +2063,11 @@ if isSupportedPlace then
         end
     end)
 
-    local DetailedEnemyGroup = Tabs.Enemies:AddLeftGroupbox("Granular Enemy Options")
+    task.spawn(function()
+        while task.wait(1) do processPortedDisables() end
+    end)
+
+    local DetailedEnemyGroup = Tabs.Enemies:AddRightGroupbox("Granular Enemy Options")
 
     task.spawn(function()
         while task.wait(1) do
@@ -1936,29 +2143,28 @@ if isSupportedPlace then
     addDetailedEnemy(DetailedEnemyGroup, "RealityBreak")
     addDetailedEnemy(DetailedEnemyGroup, "Celestial")
 
-    --------------------------------------------------------------------
-    -- Map Tab
-    --------------------------------------------------------------------
-    local MapGroup = Tabs.Map:AddLeftGroupbox("Void")
-    MapGroup:AddToggle("AntiVoid", { Text = "Anti Void", Default = false, Callback = function(Value) av = Value end })
-    MapGroup:AddDropdown("AntiVoidSetting", { Values = { "1. Teleport to Spawn", "2. Launch Up", "3. Closest Gift" }, Default = 1, Multi = false, Text = "Anti Void Setting", Callback = function(Value) antiVoidSelection = tonumber(string.split(Value, ".")[1]) end })
-    MapGroup:AddSlider("LaunchPower", { Text = "Launch Power", Default = 500, Min = 10, Max = 1000, Rounding = 0, Callback = function(Value) lp = Value end })
-    MapGroup:AddToggle("VisibleVoid", { Text = "Visible Void", Default = false, Callback = function(Value) local killVoid = workspace:FindFirstChild("KillVoid"); if killVoid then killVoid.Transparency = Value and 0 or 1 end end })
+    local VoidGroup = Tabs.Map:AddLeftGroupbox("Void")
 
-    local MapProtectionGroup = Tabs.Map:AddLeftGroupbox("Map Defenses")
+    VoidGroup:AddToggle("AntiVoid", { Text = "Anti Void", Default = false, Callback = function(Value) av = Value end })
+    VoidGroup:AddDropdown("AntiVoidSetting", { Values = { "1. Teleport to Spawn", "2. Launch Up", "3. Closest Gift" }, Default = 1, Multi = false, Text = "Anti Void Setting", Callback = function(Value) antiVoidSelection = tonumber(string.split(Value, ".")[1]) end })
+    VoidGroup:AddSlider("LaunchPower", { Text = "Launch Power", Default = 500, Min = 10, Max = 1000, Rounding = 0, Callback = function(Value) lp = Value end })
+    VoidGroup:AddToggle("VisibleVoid", { Text = "Visible Void", Default = false, Callback = function(Value) local killVoid = workspace:FindFirstChild("KillVoid"); if killVoid then killVoid.Transparency = Value and 0 or 1 end end })
+
+    local MapProtectionGroup = Tabs.Map:AddRightGroupbox("Map Defenses")
+
+    MapProtectionGroup:AddDivider("Protection Spheres")
     MapProtectionGroup:AddToggle("Tripmine_Protection", { Text = "Tripmine Safe Sphere Protection", Default = pt, Callback = function(Value) pt = Value; if not Value then for _, d in pairs(activeTripmineProtections) do if d.sphere then d.sphere:Destroy() end end table.clear(activeTripmineProtections) end end })
 
-    local TilesGroup = Tabs.Map:AddRightGroupbox("tiles")
-    TilesGroup:AddToggle("AntiFleshIceTiles", { Text = "Anti flesh tiles/ ice tiles (tile connection)", Default = false, Callback = function(Value) antiFleshTilesEnabled = Value; applyTileConnections() end })
-    TilesGroup:AddToggle("PersistentTileConnections", { Text = "Persistent tile connections", Default = false, Callback = function(Value) persistentTileConnections = Value; if Value then if not persistentRespawnConnection then persistentRespawnConnection = plr.CharacterAdded:Connect(function() task.wait(1); if persistentTileConnections and antiFleshTilesEnabled then applyTileConnections() end end) end else if persistentRespawnConnection then persistentRespawnConnection:Disconnect(); persistentRespawnConnection = nil end end end })
+    MapProtectionGroup:AddDivider("Tiles")
+    MapProtectionGroup:AddToggle("AntiFleshIceTiles", { Text = "Anti flesh tiles/ ice tiles (tile connection)", Default = false, Callback = function(Value) antiFleshTilesEnabled = Value; applyTileConnections() end })
+    MapProtectionGroup:AddToggle("PersistentTileConnections", { Text = "Persistent tile connections", Default = false, Callback = function(Value) persistentTileConnections = Value; if Value then if not persistentRespawnConnection then persistentRespawnConnection = plr.CharacterAdded:Connect(function() task.wait(1); if persistentTileConnections and antiFleshTilesEnabled then applyTileConnections() end end) end else if persistentRespawnConnection then persistentRespawnConnection:Disconnect(); persistentRespawnConnection = nil end end end })
 
-    local ExtraDisablesGroup = Tabs.Map:AddRightGroupbox("Null GUI Extra Disables")
-    ExtraDisablesGroup:AddToggle("DisableSeaMines", { Text = "Disable Sea Mines", Default = false, Callback = function(Value) disableSeaMines = Value end })
-    ExtraDisablesGroup:AddToggle("DisableVoidImplosions", { Text = "Disable Void Implosions", Default = false, Callback = function(Value) disableVoidImplosions = Value end })
-    ExtraDisablesGroup:AddToggle("DisableFakeBeacons", { Text = "Disable Fake Beacons", Default = false, Callback = function(Value) disableFakeBeacons = Value end })
-    ExtraDisablesGroup:AddToggle("DisableOblivion", { Text = "Disable Oblivion", Default = false, Callback = function(Value) disableOblivion = Value end })
+    MapProtectionGroup:AddDivider("Extra Disables")
+    MapProtectionGroup:AddToggle("DisableSeaMines", { Text = "Disable Sea Mines", Default = false, Callback = function(Value) disableSeaMines = Value end })
+    MapProtectionGroup:AddToggle("DisableVoidImplosions", { Text = "Disable Void Implosions", Default = false, Callback = function(Value) disableVoidImplosions = Value end })
+    MapProtectionGroup:AddToggle("DisableFakeBeacons", { Text = "Disable Fake Beacons", Default = false, Callback = function(Value) disableFakeBeacons = Value end })
+    MapProtectionGroup:AddToggle("DisableOblivion", { Text = "Disable Oblivion", Default = false, Callback = function(Value) disableOblivion = Value end })
 
-    -- Upgrades Tab
     local upgradeTabLeft = Tabs.Upgrades:AddLeftGroupbox("Upgrades Status")
     if upgradeTabLeft.Container then upgradeTabLeft.Container.AutomaticSize = Enum.AutomaticSize.Y end
     if fSignal then upgradeTabLeft:AddLabel("Your exploit can add upgrades.") else upgradeTabLeft:AddLabel("Your exploit currently doesn't support adding upgrades.") end
@@ -2104,9 +2310,6 @@ else
     TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" + PlaceId + "/servers/Public?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, server in ipairs(servers.data) do if server.playing < server.maxPlayers and server.id ~= JobId then TeleportService:TeleportToPlaceInstance(PlaceId, server.id, plr); return end end end Library:Notify("Failed to find a server.", 3) end })
 end
 
---------------------------------------------------------------------
--- Credits Tab Groupboxes
---------------------------------------------------------------------
 local ContributorsGroup = Tabs.Credits:AddLeftGroupbox("Contributors")
 ContributorsGroup:AddLabel("<font color='#FFA500'>kaoru_zz</font>; Guardians anti-kill")
 ContributorsGroup:AddLabel("<font color='#FFA500'>(Ali)zeja</font> Main script, Huge inspiration!")
@@ -2114,9 +2317,6 @@ ContributorsGroup:AddLabel("<font color='#FFA500'>(Ali)zeja</font> Main script, 
 local DevelopersGroup = Tabs.Credits:AddRightGroupbox("Developers")
 DevelopersGroup:AddLabel("<font color='#AA55FF'>Java (.html4)</font> Main Developer")
 
---------------------------------------------------------------------
--- Debug Tab Population
---------------------------------------------------------------------
 local DebugGroup = Tabs.Debug:AddLeftGroupbox("Debug Actions")
 DebugGroup:AddButton({
     Text = "Log Select Attributes",
@@ -2159,9 +2359,6 @@ task.spawn(function()
     end
 end)
 
---------------------------------------------------------------------
--- Settings Tab Setup (ThemeManager & SaveManager Integration)
---------------------------------------------------------------------
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 
