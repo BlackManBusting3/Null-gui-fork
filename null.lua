@@ -160,26 +160,67 @@ local Settings = {
     AutoBeacon = false, AutoStartCollecting = false, AutoFarmBeta = false, AutoPylon = false,
     TargetLevel = nil, EnemiesWhitelist = {}, CursesWhitelist = {}, UpgradesWhitelist = {}
 }
+
+-- =====================================================================
+-- STATE  (moved ABOVE webhook so all flags are in scope for getActiveOptionsList)
+-- =====================================================================
 local currentObservedLevel = nil
 local targetVoidProcessing = false
 
--- =====================================================================
--- **FORWARD DECLARATIONS** (must exist before webhook functions reference them)
--- =====================================================================
+local tweening = false
+local currentTween = nil
+local activePath = nil
+local availableNormalGifts = {}
+local availableGoldenGifts = {}
+local collectionRunId = 0
+local notifOn = true
+local destroying = false
+local disableAllEnemies = false
+local deleteAllEnemies = false
+local disableClientEnemies = false
+local autoDestroySpawns = false
+local nrb = false
+local antiFleshTilesEnabled = false
+local persistentTileConnections = false
+local persistentRespawnConnection = nil
+local disableSeaMines = false
+local disableVoidImplosions = false
+local disableFakeBeacons = false
+local disableOblivion = false
+
+local auto_disable = {Bell=false,Mart=false,Skinwalker=false,Springer=false,Baby=false,Flesh=false,nilEnemy=false,nilMirage=false,Telefragger=false,ShadowBaby=false,Cadence=false}
+local auto_break = {Bell=false,Mart=false,Skinwalker=false,Springer=false,ICBM=false,Baby=false,Flesh=false,nilEnemy=false,nilMirage=false,Telefragger=false,ShadowBaby=false,Celestial=false,Cadence=false}
+local auto_destroy = {Bell=false,Mart=false,Skinwalker=false,Springer=false,ICBM=false,Baby=false,Flesh=false,Operator=false,Kolona=false,nilEnemy=false,nilMirage=false,Telefragger=false,Sigil=false,ShadowBaby=false,Voidbreaker=false,Cadence=false,Scrapmaw=false,RealityBreak=false,Celestial=false}
+
+local pt, pb, velov = false, false, false
+local connections = {}
 local activeUpgrades = {}
+local upgradeValueGuards = {}
+local isSettingGuardValue = {}
+local blacklistedGifts = {}
+local antiVoidSelection, av, lp = 1, false, 500
+local loggedAttributes = {}
+local logToggleActive = false
+local selectionState = { failedParts = {}, rerollCount = 0 }
+local updateActiveUpgradesDisplay = function() end
+local applyUpgradeValue = function() end
+local upgradeLabels = {}
+local collectGiftsEngine = function() end
 
 -- =====================================================================
--- DISCORD WEBHOOK SYSTEM  (FIXED: nil-guards + auto-send + session info)
+-- DISCORD WEBHOOK SYSTEM  (with restart detection + enabled-options field)
 -- =====================================================================
 local Webhook = {
     URL = "",
     LevelEnabled = false,
     DeathEnabled = false,
+    RestartEnabled = false,
     AutoEnabled = false,
     AutoIntervalMinutes = 5,
     LastSentLevel = nil,
     LastLevelSendTime = 0,
     LastDeathSendTime = 0,
+    LastRestartSendTime = 0,
     LastAutoSendTime = 0,
     LevelsGained = 0,
     StartTime = os.time(),
@@ -225,7 +266,6 @@ local function getSessionUptime()
     return string.format("%dm %ds", mins, secs % 60)
 end
 
--- Robust HTTP POST — checks HTTP status code and surfaces errors
 local function httpPost(url, body)
     url = tostring(url or ""):gsub("^%s+", ""):gsub("%s+$", "")
     if url == "" then return false, "URL is empty" end
@@ -302,13 +342,82 @@ local function getActiveUpgradesList()
     return list
 end
 
+-- NEW: Collect every enabled option across the script
+local function getActiveOptionsList()
+    local list = {}
+
+    -- Gift collection
+    if Settings.CollectNormal then table.insert(list, "Collect Normal Gifts") end
+    if Settings.CollectGolden then table.insert(list, "Collect Golden Gifts") end
+    if Settings.LegitCollection then table.insert(list, "Legit Collection (slow)") end
+    if Settings.AutoStartCollecting then table.insert(list, "Auto Start Collecting") end
+    if Settings.InstantTeleport then table.insert(list, "Instant TP Collection") end
+    if Settings.AutoBeacon then table.insert(list, "Auto Beacon") end
+
+    -- Farm
+    if Settings.AutoFarmBeta then table.insert(list, "Auto Farm (Beta)") end
+    if Settings.AutoPylon then table.insert(list, "Auto Pylon") end
+    if Settings.TargetLevel then table.insert(list, "Auto Void @ Lv" .. tostring(Settings.TargetLevel)) end
+
+    -- Whitelists
+    local function countWL(tbl) local c = 0; if tbl then for _, v in pairs(tbl) do if v then c = c + 1 end end end return c end
+    local eW, cW, uW = countWL(Settings.EnemiesWhitelist), countWL(Settings.CursesWhitelist), countWL(Settings.UpgradesWhitelist)
+    if eW > 0 then table.insert(list, "Enemy Whitelist (" .. eW .. ")") end
+    if cW > 0 then table.insert(list, "Curse Whitelist (" .. cW .. ")") end
+    if uW > 0 then table.insert(list, "Upgrade Whitelist (" .. uW .. ")") end
+
+    -- Player features
+    if velov then table.insert(list, "Velocity Visualizer") end
+    if nrb then table.insert(list, "Destroy Razorbloom") end
+
+    -- Enemy controls
+    if disableAllEnemies then table.insert(list, "Disable All Enemy AI") end
+    if disableClientEnemies then table.insert(list, "Disable Client Enemies") end
+    if deleteAllEnemies then table.insert(list, "Delete All Enemies") end
+    if guardianImmunity then table.insert(list, "Guardian Death Immunity") end
+    if voidboundGuardianImmunity then table.insert(list, "Shadow Guardian Immunity") end
+    if pb then table.insert(list, "Bullet Protection Sphere") end
+
+    local granular = 0
+    for _, t in pairs(auto_disable) do if t then granular = granular + 1 end end
+    for _, t in pairs(auto_break) do if t then granular = granular + 1 end end
+    for _, t in pairs(auto_destroy) do if t then granular = granular + 1 end end
+    if granular > 0 then table.insert(list, "Granular Enemy Options (" .. granular .. ")") end
+
+    -- Map
+    if av then
+        local modes = {"Spawn", "Launch", "Gift"}
+        table.insert(list, "Anti Void (" .. (modes[antiVoidSelection] or "?") .. ")")
+    end
+    if pt then table.insert(list, "Tripmine Protection") end
+    if antiFleshTilesEnabled then table.insert(list, "Anti Flesh/Ice Tiles") end
+    if persistentTileConnections then table.insert(list, "Persistent Tile Connections") end
+    if disableSeaMines then table.insert(list, "Disable Sea Mines") end
+    if disableVoidImplosions then table.insert(list, "Disable Void Implosions") end
+    if disableFakeBeacons then table.insert(list, "Disable Fake Beacons") end
+    if disableOblivion then table.insert(list, "Disable Oblivion") end
+
+    -- Webhook triggers
+    if Webhook.LevelEnabled then table.insert(list, "WEBHOOK: Level") end
+    if Webhook.DeathEnabled then table.insert(list, "WEBHOOK: Death") end
+    if Webhook.RestartEnabled then table.insert(list, "WEBHOOK: Restart") end
+    if Webhook.AutoEnabled then table.insert(list, "WEBHOOK: Auto (" .. Webhook.AutoIntervalMinutes .. "m)") end
+
+    return list
+end
+
 local function buildWebhookFields()
     local enemyList = getActiveEnemiesList()
     local upgradeList = getActiveUpgradesList()
+    local optionsList = getActiveOptionsList()
+
     local enemiesText = #enemyList > 0 and table.concat(enemyList, "\n") or "None"
     local upgradesText = #upgradeList > 0 and table.concat(upgradeList, "\n") or "None"
+    local optionsText = #optionsList > 0 and table.concat(optionsList, "\n") or "None"
+
     if #enemiesText > 1000 then enemiesText = enemiesText:sub(1, 980) .. "\n... (truncated)" end
     if #upgradesText > 1000 then upgradesText = upgradesText:sub(1, 980) .. "\n... (truncated)" end
+    if #optionsText > 1000 then optionsText = optionsText:sub(1, 980) .. "\n... (truncated)" end
 
     local displayName = plr.DisplayName ~= plr.Name and string.format("%s (%s)", plr.Name, plr.DisplayName) or plr.Name
     local executor = getExecutorName()
@@ -320,6 +429,7 @@ local function buildWebhookFields()
         {name = "📊 Levels This Session", value = tostring(Webhook.LevelsGained), inline = true},
         {name = "⏱ Session Uptime", value = getSessionUptime(), inline = true},
         {name = "🌐 Game", value = string.format("%s (%d)", gameName, PlaceId), inline = true},
+        {name = "⚙️ Enabled Options (" .. tostring(#optionsList) .. ")", value = optionsText, inline = false},
         {name = "Active Enemies (" .. tostring(#enemyList) .. ")", value = enemiesText, inline = false},
         {name = "Active Upgrades (" .. tostring(#upgradeList) .. ")", value = upgradesText, inline = false},
     }
@@ -381,6 +491,20 @@ local function dispatchDeathWebhook()
     })
 end
 
+local function dispatchRestartWebhook(oldLevel, newLevel)
+    return dispatchWebhook({
+        username = "Null GUI",
+        embeds = {{
+            title = "🔄 Player Restarted",
+            description = string.format("**%s**'s level dropped from **%d → %d**. The player most likely died and respawned.", plr.Name, oldLevel, newLevel),
+            color = 0xFFA500,
+            fields = buildWebhookFields(),
+            timestamp = getTimestamp(),
+            footer = {text = "Java's Null GUI | Restart Detector"},
+        }}
+    })
+end
+
 local function dispatchPeriodicWebhook()
     return dispatchWebhook({
         username = "Null GUI",
@@ -410,49 +534,8 @@ end)
 -- END WEBHOOK SYSTEM
 
 -- =====================================================================
--- STATE
+-- HELPERS
 -- =====================================================================
-local tweening = false
-local currentTween = nil
-local activePath = nil
-local availableNormalGifts = {}
-local availableGoldenGifts = {}
-local collectionRunId = 0
-local notifOn = true
-local destroying = false
-local disableAllEnemies = false
-local deleteAllEnemies = false
-local disableClientEnemies = false
-local autoDestroySpawns = false
-local nrb = false
-local antiFleshTilesEnabled = false
-local persistentTileConnections = false
-local persistentRespawnConnection = nil
-local disableSeaMines = false
-local disableVoidImplosions = false
-local disableFakeBeacons = false
-local disableOblivion = false
-
-local auto_disable = {Bell=false,Mart=false,Skinwalker=false,Springer=false,Baby=false,Flesh=false,nilEnemy=false,nilMirage=false,Telefragger=false,ShadowBaby=false,Cadence=false}
-local auto_break = {Bell=false,Mart=false,Skinwalker=false,Springer=false,ICBM=false,Baby=false,Flesh=false,nilEnemy=false,nilMirage=false,Telefragger=false,ShadowBaby=false,Celestial=false,Cadence=false}
-local auto_destroy = {Bell=false,Mart=false,Skinwalker=false,Springer=false,ICBM=false,Baby=false,Flesh=false,Operator=false,Kolona=false,nilEnemy=false,nilMirage=false,Telefragger=false,Sigil=false,ShadowBaby=false,Voidbreaker=false,Cadence=false,Scrapmaw=false,RealityBreak=false,Celestial=false}
-
-local pt, pb, velov = false, false, false
-local connections = {}
--- activeUpgrades already forward-declared above; just keep the reference
-activeUpgrades = activeUpgrades or {}
-local upgradeValueGuards = {}
-local isSettingGuardValue = {}
-local blacklistedGifts = {}
-local antiVoidSelection, av, lp = 1, false, 500
-local loggedAttributes = {}
-local logToggleActive = false
-local selectionState = { failedParts = {}, rerollCount = 0 }
-local updateActiveUpgradesDisplay = function() end
-local applyUpgradeValue = function() end
-local upgradeLabels = {}
-local collectGiftsEngine = function() end
-
 local function getToggle(name) return (Toggles and Toggles[name]) or (Options and Options[name]) end
 local function getChar(player) return player and player.Character end
 local function getRoot(character) return character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character.PrimaryPart) end
@@ -532,7 +615,7 @@ end)
 table.insert(scriptConnections, connections["PylonAddedListener"])
 
 -- =====================================================================
--- LEVEL TRACKER (with levels-gained counter + webhook)
+-- LEVEL TRACKER (Level UP webhook + Restart detection webhook)
 -- =====================================================================
 connections["LevelLogListener"] = LogService.MessageOut:Connect(function(msg, msgType)
     local lvlStr = string.match(msg, "Level%s*(%d+)")
@@ -542,11 +625,21 @@ connections["LevelLogListener"] = LogService.MessageOut:Connect(function(msg, ms
             local previous = currentObservedLevel
             currentObservedLevel = lvl
             if previous and lvl ~= previous then
-                if lvl > previous then Webhook.LevelsGained = Webhook.LevelsGained + (lvl - previous) end
-                Webhook.LastSentLevel = lvl
-                if Webhook.LevelEnabled and (os.clock() - Webhook.LastLevelSendTime >= 1) then
-                    Webhook.LastLevelSendTime = os.clock()
-                    task.spawn(function() dispatchLevelWebhook(lvl) end)
+                if lvl < previous then
+                    -- Restart detected (level went down = player likely died)
+                    Webhook.LastSentLevel = lvl
+                    if Webhook.RestartEnabled and (os.clock() - Webhook.LastRestartSendTime >= 2) then
+                        Webhook.LastRestartSendTime = os.clock()
+                        task.spawn(function() dispatchRestartWebhook(previous, lvl) end)
+                    end
+                else
+                    -- Level went up
+                    Webhook.LevelsGained = Webhook.LevelsGained + (lvl - previous)
+                    Webhook.LastSentLevel = lvl
+                    if Webhook.LevelEnabled and (os.clock() - Webhook.LastLevelSendTime >= 1) then
+                        Webhook.LastLevelSendTime = os.clock()
+                        task.spawn(function() dispatchLevelWebhook(lvl) end)
+                    end
                 end
             end
         end
@@ -1400,6 +1493,31 @@ if isSupportedPlace then
         applyUpgradeValue("GiftMagnet", (V == 0) and 1 or (V * 30), upgradeLabels["GiftMagnet"])
     end})
 
+    -- NEW: Players in Server list
+    local PlayersGroup = Tabs.Playerlist:AddRightGroupbox("Players in Server")
+    local playersLabel = PlayersGroup:AddLabel("Loading...")
+    task.spawn(function()
+        while task.wait(2) do
+            if playersLabel then
+                local list = Players:GetPlayers()
+                table.sort(list, function(a, b) return a.Name:lower() < b.Name:lower() end)
+                local lines = {}
+                for _, p in ipairs(list) do
+                    local tag = (p == plr) and " <font color='#00FF88'>(you)</font>" or ""
+                    local ping = ""
+                    pcall(function()
+                        if p.GetNetworkPing then
+                            local ms = math.floor((p:GetNetworkPing() or 0) * 1000)
+                            if ms > 0 then ping = string.format(" <font color='#AAAAAA'>%dms</font>", ms) end
+                        end
+                    end)
+                    table.insert(lines, "• " .. p.Name .. tag .. ping)
+                end
+                playersLabel:SetText(string.format("<b>%d player(s) online:</b>\n%s", #list, table.concat(lines, "\n")))
+            end
+        end
+    end)
+
     -- ENEMIES
     local EG = Tabs.Enemies:AddLeftGroupbox("Enemy Controls")
     EG:AddToggle("DisableAllEnemies", {Text = "Disable All Enemy AI", Default = false, Callback = function(V)
@@ -1607,7 +1725,7 @@ if isSupportedPlace then
     updateActiveUpgradesDisplay()
 
     -- =================================================================
-    -- WEBHOOK TAB
+    -- WEBHOOK TAB  (restart toggle + enabled options panel)
     -- =================================================================
     local WCG = Tabs.Webhook:AddLeftGroupbox("Discord Webhook")
 
@@ -1646,6 +1764,13 @@ if isSupportedPlace then
         Default = false,
         Tooltip = "Sends a webhook whenever the local player dies.",
         Callback = function(Value) Webhook.DeathEnabled = Value end
+    })
+
+    WCG:AddToggle("WebhookRestartToggle", {
+        Text = "<font color='#FFA500'>Notify on restart (level dropped)</font>",
+        Default = false,
+        Tooltip = "Sends a webhook if the observed level is lower than the previous one — usually indicates the player died and restarted.",
+        Callback = function(Value) Webhook.RestartEnabled = Value end
     })
 
     WCG:AddDivider("Auto Period Report")
@@ -1710,6 +1835,19 @@ if isSupportedPlace then
     })
 
     WCG:AddButton({
+        Text = "Send Restart Webhook (Test)",
+        Func = function()
+            local ok, err = isValidWebhookURL()
+            if not ok then Library:Notify("Webhook config error: " .. tostring(err), 5); return end
+            local old = (currentObservedLevel or 1) + 5
+            local new = currentObservedLevel or 1
+            local success, info = dispatchRestartWebhook(old, new)
+            if success then Library:Notify("✅ Restart test sent: " .. tostring(info), 3)
+            else Library:Notify("❌ Failed: " .. tostring(info), 8) end
+        end
+    })
+
+    WCG:AddButton({
         Text = "Send Periodic Report (Test)",
         Func = function()
             local ok, err = isValidWebhookURL()
@@ -1727,6 +1865,7 @@ if isSupportedPlace then
     WIG:AddLabel("• Current level + levels gained this session")
     WIG:AddLabel("• Session uptime")
     WIG:AddLabel("• Game name & place ID")
+    WIG:AddLabel("• <b>Enabled script options</b>")
     WIG:AddLabel("• Active enemies & active upgrades")
     WIG:AddLabel("• Timestamp & footer")
 
@@ -1739,6 +1878,7 @@ if isSupportedPlace then
                     "URL Set: " .. (Webhook.URL ~= "" and "<font color='#00FF00'>Yes</font>" or "<font color='#FF6666'>No</font>"),
                     "Level Trigger: " .. (Webhook.LevelEnabled and "<font color='#00FF00'>ON</font>" or "<font color='#AAAAAA'>OFF</font>"),
                     "Death Trigger: " .. (Webhook.DeathEnabled and "<font color='#00FF00'>ON</font>" or "<font color='#AAAAAA'>OFF</font>"),
+                    "Restart Trigger: " .. (Webhook.RestartEnabled and "<font color='#00FF00'>ON</font>" or "<font color='#AAAAAA'>OFF</font>"),
                     "Auto Trigger: " .. (Webhook.AutoEnabled and ("<font color='#00FF00'>" .. Webhook.AutoIntervalMinutes .. " min</font>") or "<font color='#AAAAAA'>OFF</font>"),
                     "Levels This Session: " .. tostring(Webhook.LevelsGained),
                     "Current Level: " .. tostring(currentObservedLevel or "N/A"),
@@ -1746,6 +1886,21 @@ if isSupportedPlace then
                     "Last Response: " .. Webhook.LastResponse,
                 }
                 wStatus:SetText(table.concat(lines, "\n"))
+            end
+        end
+    end)
+
+    WIG:AddDivider("Enabled Options (Live)")
+    local enabledOptsLbl = WIG:AddLabel("Loading...")
+    task.spawn(function()
+        while task.wait(1.5) do
+            if enabledOptsLbl then
+                local opts = getActiveOptionsList()
+                if #opts > 0 then
+                    enabledOptsLbl:SetText(string.format("<font color='#00FF88'>Enabled (%d):</font>\n%s", #opts, table.concat(opts, "\n")))
+                else
+                    enabledOptsLbl:SetText("<font color='#AAAAAA'>No options enabled.</font>")
+                end
             end
         end
     end)
@@ -1778,6 +1933,23 @@ else
         end
     end})
     TG:AddButton({Text = "Rejoin Server", Func = function() TeleportService:TeleportToPlaceInstance(PlaceId, JobId, plr) end})
+
+    local PG = Tabs.UniversalMain:AddRightGroupbox("Players in Server")
+    local plLbl = PG:AddLabel("Loading...")
+    task.spawn(function()
+        while task.wait(2) do
+            if plLbl then
+                local list = Players:GetPlayers()
+                table.sort(list, function(a, b) return a.Name:lower() < b.Name:lower() end)
+                local lines = {}
+                for _, p in ipairs(list) do
+                    local tag = (p == plr) and " <font color='#00FF88'>(you)</font>" or ""
+                    table.insert(lines, "• " .. p.Name .. tag)
+                end
+                plLbl:SetText(string.format("<b>%d player(s) online:</b>\n%s", #list, table.concat(lines, "\n")))
+            end
+        end
+    end)
 end
 
 local CG = Tabs.Credits:AddLeftGroupbox("Contributors")
