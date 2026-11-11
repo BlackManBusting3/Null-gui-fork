@@ -287,10 +287,10 @@ local function getRoot(character) return character and (character:FindFirstChild
 --------------------------------------------------------------------
 local function destroyRazorbloom()
     if not nrb then return end
-    
+
     local char = getChar(plr)
     if not char then return end
-    
+
     local rb = char:FindFirstChild("Razorbloom")
     if rb then
         rb:Destroy()
@@ -378,7 +378,7 @@ local function teleportToNearestPylon()
 
     if closest then
         interactWithPylon(closest)
-        if Library and Library.Notify then Library:Notify("Teleported to Pylon: " .. closest.Name, 3) end
+        if Library and Library.Notify then Library:Notify("Teleporting to Pylons: " .. closest.Name, 3) end
         return true
     end
     return false
@@ -550,7 +550,7 @@ local function setupCharacter(char)
         end)
         table.insert(scriptConnections, conn)
     end
-    
+
     if nrb then
         task.wait(0.5)
         destroyRazorbloom()
@@ -684,7 +684,7 @@ local function checkAndVoteSelectParts()
             local function attemptBuy(partName)
                 local attempts = 0
                 local initialState = getBoardState()
-                
+
                 while attempts < 4 and Settings.AutoFarmBeta do
                     local sFolder = workspace:FindFirstChild("Select")
                     if not sFolder then return true end
@@ -693,11 +693,11 @@ local function checkAndVoteSelectParts()
 
                     interactWithPart(p)
                     attempts = attempts + 1
-                    
+
                     if attempts < 4 then
                         task.wait(1.5) 
                     end
-                    
+
                     local newState = getBoardState()
                     if partName == "Reroll" then
                         if newState ~= initialState then return true end 
@@ -705,7 +705,7 @@ local function checkAndVoteSelectParts()
                         if not sFolder:FindFirstChild(partName) or newState ~= initialState then return true end
                     end
                 end
-                
+
                 selectionState.failedParts[partName] = true
                 return false 
             end
@@ -823,11 +823,11 @@ local function checkAndVoteSelectParts()
                             end
                         end
                     end
-                    
+
                     if part3 and not selectionState.failedParts["3"] then
                         attemptBuy("3")
                     end
-                    
+
                     break 
                 end
             end
@@ -1014,7 +1014,7 @@ local function processProtections()
 end
 
 --------------------------------------------------------------------
--- Gift Collection & AI Defenses Logic 
+-- Gift Collection & AI Defenses Logic (Enhanced Universal Detection)
 --------------------------------------------------------------------
 local Library
 
@@ -1028,20 +1028,42 @@ local function refreshGifts(normal, golden)
     table.clear(availableNormalGifts)
     table.clear(availableGoldenGifts)
 
-    local dynamicPools = workspace:FindFirstChild("Item_Pools")
-    local normalFolder = (dynamicPools and dynamicPools:FindFirstChild("Gift")) or workspace:FindFirstChild("Gifts") or workspace:FindFirstChild("SpawnedGifts")
-    local goldenFolder = (dynamicPools and dynamicPools:FindFirstChild("GoldenGift")) or normalFolder
+    local checkedObjects = {}
 
-    if normal and normalFolder then
-        for _, gift in ipairs(normalFolder:GetChildren()) do
-            local isGolden = gift.Name:lower():find("golden") ~= nil
-            if not isGolden then table.insert(availableNormalGifts, gift) end
+    local function inspectObj(obj)
+        if not obj or checkedObjects[obj] or not obj.Parent then return end
+        checkedObjects[obj] = true
+
+        local nameLower = obj.Name:lower()
+        if nameLower:find("gift") or nameLower:find("present") then
+            local isGolden = (nameLower:find("golden") ~= nil or nameLower:find("gold") ~= nil)
+            local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true) or (obj.IsA and obj:IsA("Model") and obj.PrimaryPart)
+            
+            if part then
+                if isGolden then
+                    if golden then table.insert(availableGoldenGifts, obj) end
+                else
+                    if normal then table.insert(availableNormalGifts, obj) end
+                end
+            end
         end
     end
-    if golden and goldenFolder then
-        for _, gift in ipairs(goldenFolder:GetChildren()) do
-            local isGolden = gift.Name:lower():find("golden") ~= nil
-            if isGolden then table.insert(availableGoldenGifts, gift) end
+
+    -- Deep workspace & CurrentRooms recursive search to catch gifts anywhere in the map
+    local searchRoots = {
+        workspace:FindFirstChild("Item_Pools"),
+        workspace:FindFirstChild("CurrentRooms"),
+        workspace:FindFirstChild("Gifts"),
+        workspace:FindFirstChild("SpawnedGifts"),
+        workspace
+    }
+
+    for _, container in ipairs(searchRoots) do
+        if container then
+            inspectObj(container)
+            for _, child in ipairs(container:GetDescendants()) do
+                inspectObj(child)
+            end
         end
     end
 end
@@ -1054,7 +1076,7 @@ local function getClosestGift(giftList)
     local closest, shortestDist = nil, math.huge
     for _, gift in ipairs(giftList) do
         if gift and gift.Parent and not blacklistedGifts[gift] then
-            local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart")
+            local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart", true) or (gift.IsA and gift:IsA("Model") and gift.PrimaryPart)
             if part then
                 if part.Position == Vector3.new(0,0,0) or part.Position.Y < -500 or part.Position.Y > 3000 or part.Position.Magnitude > 30000 then
                     blacklistedGifts[gift] = true
@@ -1115,7 +1137,7 @@ local function walkToPositionPathfinding(targetPos)
 end
 
 local function walkToGiftPathfinding(targetGift)
-    local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart")
+    local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart", true) or (targetGift.IsA and targetGift:IsA("Model") and targetGift.PrimaryPart)
     if not targetPart or targetPart.Position == Vector3.new(0,0,0) then return false end
     return walkToPositionPathfinding(targetPart.Position)
 end
@@ -1127,7 +1149,7 @@ local function moveToGift(targetGift)
     end
     local char = getChar(plr)
     local root = getRoot(char)
-    local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart")
+    local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart", true) or (targetGift.IsA and targetGift:IsA("Model") and targetGift.PrimaryPart)
     if not root or not targetPart or targetPart.Position == Vector3.new(0,0,0) then return nil end
     local targetCFrame = targetPart.CFrame + Vector3.new(0, 3, 0)
 
@@ -1161,7 +1183,7 @@ local function handleSpawnNavigation()
             end
         end
     end
-    
+
     return false
 end
 
@@ -1175,7 +1197,7 @@ local function stopAllCollection()
         currentTween:Cancel()
         currentTween = nil
     end
-    
+
     local normalToggle = getToggle("CollectNormalToggle")
     if normalToggle then normalToggle:SetValue(false) end
 
@@ -1215,14 +1237,14 @@ collectGiftsEngine = function(isGoldenTarget)
                     if failedAttempts >= 3 or #availableNormalGifts == 0 then
                         if notifOn then notif("No normal gifts left. Switching to Golden Gifts.", "Collection System") end
                         Settings.CollectNormal = false
-                        
+
                         local normalTgl = getToggle("CollectNormalToggle")
                         if normalTgl then normalTgl:SetValue(false) end
-                        
+
                         Settings.CollectGolden = true
                         local goldenTgl = getToggle("CollectGoldenToggle")
                         if goldenTgl then goldenTgl:SetValue(true) end
-                        
+
                         tweening = false
                         task.defer(function() collectGiftsEngine(true) end)
                         return
@@ -1387,7 +1409,7 @@ local function processAntiVoid()
             local targetPool = #availableNormalGifts > 0 and availableNormalGifts or availableGoldenGifts
             local gift = getClosestGift(targetPool)
             if gift then
-                local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart")
+                local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart", true) or (gift.IsA and gift:IsA("Model") and gift.PrimaryPart)
                 if part then root.CFrame = part.CFrame + Vector3.new(0, 5, 0) end
             else
                 handleSpawnNavigation()
@@ -1480,7 +1502,7 @@ if isSupportedPlace then
     GiftGroup:AddToggle("AutoStartCollectingToggle", {
         Text = "<font color='#00FFCC'>Auto start collecting</font>",
         Default = Settings.AutoStartCollecting,
-        Tooltip = "Automatically starts/restarts normal gift collection when a new level starts.",
+        Tooltip = "Automatically starts/restarts normal gift collection when SoundService.SFXFolder.NewLevel plays.",
         Callback = function(Value)
             Settings.AutoStartCollecting = Value
             if Value then
@@ -1495,7 +1517,7 @@ if isSupportedPlace then
                             if normalTgl then normalTgl:SetValue(true) end
                             if tweening then stopAllCollection(); task.wait(0.1) end
                             collectGiftsEngine(false)
-                            if notifOn then notif("NewLevel detected. Auto-started normal gift collection.", "Normal and Golden Gifts") end
+                            if notifOn then notif("NewLevel sound detected. Auto-started normal gift collection.", "Collection System") end
                         end
                     end)
                     table.insert(scriptConnections, connections["AutoStartCollectingConn"])
@@ -1548,7 +1570,7 @@ if isSupportedPlace then
     GiftGroup:AddToggle("LegitCollectionToggle", {
         Text = "<font color='#FF4444'>Legit collection (slow)</font>",
         Default = Settings.LegitCollection,
-        Tooltip = "Uses PathfindingService to walk to gifts instead of teleporting.",
+        Tooltip = "Uses PathfindingService to naturally walk to gifts instead of teleporting.",
         Callback = function(Value)
             Settings.LegitCollection = Value
             if Value then Library:Notify("Legit Pathfinding Mode Enabled.", 2) end
@@ -1618,7 +1640,7 @@ if isSupportedPlace then
     })
 
     FarmGroup:AddButton({
-        Text = "Teleport to Pylon (Buggy) ",
+        Text = "Teleport to Pylon",
         Func = function()
             teleportToNearestPylon()
         end
@@ -1640,20 +1662,20 @@ if isSupportedPlace then
     })
 
     FarmGroup:AddInput("TargetLevelVoidInput", {
-        Text = "Auto Reset at Level",
+        Text = "Auto Void at Level",
         Default = "",
         Numeric = true,
         Finished = false,
         Placeholder = "Target Level (e.g. 2)...",
-        Tooltip = "Input player level to automatically Reset the run upon reaching it.",
+        Tooltip = "Input player level to automatically teleport character into the void upon reaching it.",
         Callback = function(Value)
             local num = tonumber(Value)
             if num and num > 0 then
                 Settings.TargetLevel = num
-                Library:Notify("Auto Restart set to level: " .. tostring(num), 2)
+                Library:Notify("Auto Void set for Level " .. tostring(num), 2)
             else
                 Settings.TargetLevel = nil
-                Library:Notify("Auto Restart Level disabled.", 2)
+                Library:Notify("Auto Void Level disabled.", 2)
             end
         end
     })
@@ -1704,7 +1726,7 @@ if isSupportedPlace then
     PlayerGroup:AddToggle("DestroyRazorbloomToggle", {
         Text = "<font color='#FF6666'>Destroy Razorbloom (VISIBLE TO OTHERS)</font>",
         Default = nrb,
-        Tooltip = "destroys Razorbloom on your client, will still be visible for anyone else .",
+        Tooltip = "Automatically destroys Razorbloom objects from your character when they appear.",
         Callback = function(Value)
             nrb = Value
             if Value then
@@ -1722,7 +1744,7 @@ if isSupportedPlace then
         Min = 0,
         Max = 10,
         Rounding = 0,
-        Tooltip = "Adds 30 Magnet upgrades per slider number. works as gift collection range.",
+        Tooltip = "Adds 30 Magnet upgrades per slider tick (0 sets magnet upgrade to 1).",
         Callback = function(Value)
             local magnetAmount
             if Value == 0 then
@@ -1735,7 +1757,7 @@ if isSupportedPlace then
     })
 
     -- Enemies Tab
-    local EnemyControlGroup = Tabs.Enemies:AddLeftGroupbox("Entity Disabler")
+    local EnemyControlGroup = Tabs.Enemies:AddLeftGroupbox("AI & Entity Disabler")
 
     EnemyControlGroup:AddToggle("DisableAllEnemies", {
         Text = "Disable All Enemy AI", Default = false,
@@ -1749,10 +1771,10 @@ if isSupportedPlace then
                     end)
                     table.insert(scriptConnections, connections["DisableEnemies"])
                 end
-                Library:Notify("Enemy AI disabled.", 3)
+                Library:Notify("Workspace Enemy AI disabled.", 3)
             else
                 if connections["DisableEnemies"] then connections["DisableEnemies"]:Disconnect(); connections["DisableEnemies"] = nil end
-                Library:Notify("Enemy AI re-enabled.", 3)
+                Library:Notify("Workspace Enemy AI re-enabled.", 3)
             end
         end
     })
@@ -1794,7 +1816,7 @@ if isSupportedPlace then
                     end)
                     table.insert(scriptConnections, connections["DeleteEnemies"])
                 end
-                Library:Notify("Auto-delete all enemies enabled (Guardian Protection/Immunity active).", 3)
+                Library:Notify("Auto-delete all enemies enabled (Guardian Protection active).", 3)
             else
                 if connections["DeleteEnemies"] then connections["DeleteEnemies"]:Disconnect(); connections["DeleteEnemies"] = nil end
                 Library:Notify("Auto-delete all enemies disabled.", 3)
@@ -1838,7 +1860,7 @@ if isSupportedPlace then
         end
     end)
 
-    local DetailedEnemyGroup = Tabs.Enemies:AddLeftGroupbox("Manage Enemies")
+    local DetailedEnemyGroup = Tabs.Enemies:AddLeftGroupbox("Granular Enemy Options")
 
     task.spawn(function()
         while task.wait(1) do
@@ -1856,7 +1878,7 @@ if isSupportedPlace then
             group:AddToggle(name.."_Disable", { Text = "Auto Disable", Default = auto_disable[name], Callback = function(v) auto_disable[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
         end
         if auto_break[name] ~= nil then 
-            group:AddToggle(name.."_Break", { Text = "Auto Break AI !! BUGGY !! ", Default = auto_break[name], Callback = function(v) auto_break[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
+            group:AddToggle(name.."_Break", { Text = "Auto Break AI", Default = auto_break[name], Callback = function(v) auto_break[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
         end
         if auto_destroy[name] ~= nil then 
             group:AddToggle(name.."_Destroy", { Text = "Auto Destroy", Default = auto_destroy[name], Callback = function(v) auto_destroy[name] = v; if v then handleEnemy(enemies and enemies:FindFirstChild(name)) end end }) 
@@ -1927,10 +1949,8 @@ if isSupportedPlace then
     MapProtectionGroup:AddToggle("Tripmine_Protection", { Text = "Tripmine Safe Sphere Protection", Default = pt, Callback = function(Value) pt = Value; if not Value then for _, d in pairs(activeTripmineProtections) do if d.sphere then d.sphere:Destroy() end end table.clear(activeTripmineProtections) end end })
 
     local TilesGroup = Tabs.Map:AddRightGroupbox("tiles")
-    TilesGroup:AddToggle("AntiFleshIceTiles", { Text = "Anti flesh tiles ", Default = false, Callback = function(Value) antiFleshTilesEnabled = Value; applyTileConnections() end })
+    TilesGroup:AddToggle("AntiFleshIceTiles", { Text = "Anti flesh tiles/ ice tiles (tile connection)", Default = false, Callback = function(Value) antiFleshTilesEnabled = Value; applyTileConnections() end })
     TilesGroup:AddToggle("PersistentTileConnections", { Text = "Persistent tile connections", Default = false, Callback = function(Value) persistentTileConnections = Value; if Value then if not persistentRespawnConnection then persistentRespawnConnection = plr.CharacterAdded:Connect(function() task.wait(1); if persistentTileConnections and antiFleshTilesEnabled then applyTileConnections() end end) end else if persistentRespawnConnection then persistentRespawnConnection:Disconnect(); persistentRespawnConnection = nil end end end })
-    TilesGroup:AddToggle("AntiIceTiles", { Text = "Anti ice tiles", Default = false, Callback = function(Value) antiFleshTilesEnabled = Value; applyTileConnections() end })
-
 
     local ExtraDisablesGroup = Tabs.Map:AddRightGroupbox("Null GUI Extra Disables")
     ExtraDisablesGroup:AddToggle("DisableSeaMines", { Text = "Disable Sea Mines", Default = false, Callback = function(Value) disableSeaMines = Value end })
@@ -2079,9 +2099,9 @@ else
     local selectedPlayer = nil
     TeleportGroup:AddDropdown("TargetPlayerDropdown", { Text = "Select Player to TP", Values = getPlayerNames(), Default = 1, Callback = function(Value) selectedPlayer = Value end })
     TeleportGroup:AddButton({ Text = "Refresh Player List", Func = function() if Options and Options.TargetPlayerDropdown then Options.TargetPlayerDropdown:SetValues(getPlayerNames()) end end })
-    TeleportGroup:AddButton({ Text = "Teleport to Player", Func = function() if selectedPlayer then local targetPlr = Players:FindFirstChild(selectedPlayer) if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame; Library:Notify("Teleported to " .. selectedPlayer, 3) end end end })
+    TeleportGroup:AddButton({ Text = "Teleport to Player", Func = function() if selectedPlayer then local targetPlr = Players:FindFirstChild(selectedPlayer) if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame; Library:Notify("Teleported to " + selectedPlayer, 3) end end end })
     TeleportGroup:AddButton({ Text = "Rejoin Server", Func = function() TeleportService:TeleportToPlaceInstance(PlaceId, JobId, plr) end })
-    TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, server in ipairs(servers.data) do if server.playing < server.maxPlayers and server.id ~= JobId then TeleportService:TeleportToPlaceInstance(PlaceId, server.id, plr); return end end end Library:Notify("Failed to find a server.", 3) end })
+    TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" + PlaceId + "/servers/Public?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, server in ipairs(servers.data) do if server.playing < server.maxPlayers and server.id ~= JobId then TeleportService:TeleportToPlaceInstance(PlaceId, server.id, plr); return end end end Library:Notify("Failed to find a server.", 3) end })
 end
 
 --------------------------------------------------------------------
@@ -2099,10 +2119,10 @@ DevelopersGroup:AddLabel("<font color='#AA55FF'>Java (.html4)</font> Main Develo
 --------------------------------------------------------------------
 local DebugGroup = Tabs.Debug:AddLeftGroupbox("Debug Actions")
 DebugGroup:AddButton({
-    Text = "Log Selection Attributes",
+    Text = "Log Select Attributes",
     Func = function()
         logSelectAttributes()
-        Library:Notify("Logged Pedestals attributes to console/file.", 3)
+        Library:Notify("Logged board attributes to console/file.", 3)
     end
 })
 
@@ -2124,8 +2144,8 @@ DebugGroup:AddButton({
     end
 })
 
-local DebugInfoGroup = Tabs.Debug:AddRightGroupbox("Session State - Nullscape")
-local levelLabel = DebugInfoGroup:AddLabel("Current Observed Level: Unknown )
+local DebugInfoGroup = Tabs.Debug:AddRightGroupbox("Session State")
+local levelLabel = DebugInfoGroup:AddLabel("Current Observed Level: N/A")
 local connLabel = DebugInfoGroup:AddLabel("Active Connections: " .. tostring(#scriptConnections))
 
 task.spawn(function()
