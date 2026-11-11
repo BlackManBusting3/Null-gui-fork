@@ -1014,7 +1014,7 @@ local function processProtections()
 end
 
 --------------------------------------------------------------------
--- Gift Collection & AI Defenses Logic 
+-- Gift Collection & AI Defenses Logic (Enhanced Universal Detection)
 --------------------------------------------------------------------
 local Library
 
@@ -1028,20 +1028,42 @@ local function refreshGifts(normal, golden)
     table.clear(availableNormalGifts)
     table.clear(availableGoldenGifts)
 
-    local dynamicPools = workspace:FindFirstChild("Item_Pools")
-    local normalFolder = (dynamicPools and dynamicPools:FindFirstChild("Gift")) or workspace:FindFirstChild("Gifts") or workspace:FindFirstChild("SpawnedGifts")
-    local goldenFolder = (dynamicPools and dynamicPools:FindFirstChild("GoldenGift")) or normalFolder
+    local checkedObjects = {}
 
-    if normal and normalFolder then
-        for _, gift in ipairs(normalFolder:GetChildren()) do
-            local isGolden = gift.Name:lower():find("golden") ~= nil
-            if not isGolden then table.insert(availableNormalGifts, gift) end
+    local function inspectObj(obj)
+        if not obj or checkedObjects[obj] or not obj.Parent then return end
+        checkedObjects[obj] = true
+
+        local nameLower = obj.Name:lower()
+        if nameLower:find("gift") or nameLower:find("present") then
+            local isGolden = (nameLower:find("golden") ~= nil or nameLower:find("gold") ~= nil)
+            local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true) or (obj.IsA and obj:IsA("Model") and obj.PrimaryPart)
+            
+            if part then
+                if isGolden then
+                    if golden then table.insert(availableGoldenGifts, obj) end
+                else
+                    if normal then table.insert(availableNormalGifts, obj) end
+                end
+            end
         end
     end
-    if golden and goldenFolder then
-        for _, gift in ipairs(goldenFolder:GetChildren()) do
-            local isGolden = gift.Name:lower():find("golden") ~= nil
-            if isGolden then table.insert(availableGoldenGifts, gift) end
+
+    -- Deep workspace & CurrentRooms recursive search to catch gifts anywhere in the map
+    local searchRoots = {
+        workspace:FindFirstChild("Item_Pools"),
+        workspace:FindFirstChild("CurrentRooms"),
+        workspace:FindFirstChild("Gifts"),
+        workspace:FindFirstChild("SpawnedGifts"),
+        workspace
+    }
+
+    for _, container in ipairs(searchRoots) do
+        if container then
+            inspectObj(container)
+            for _, child in ipairs(container:GetDescendants()) do
+                inspectObj(child)
+            end
         end
     end
 end
@@ -1054,7 +1076,7 @@ local function getClosestGift(giftList)
     local closest, shortestDist = nil, math.huge
     for _, gift in ipairs(giftList) do
         if gift and gift.Parent and not blacklistedGifts[gift] then
-            local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart")
+            local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart", true) or (gift.IsA and gift:IsA("Model") and gift.PrimaryPart)
             if part then
                 if part.Position == Vector3.new(0,0,0) or part.Position.Y < -500 or part.Position.Y > 3000 or part.Position.Magnitude > 30000 then
                     blacklistedGifts[gift] = true
@@ -1115,7 +1137,7 @@ local function walkToPositionPathfinding(targetPos)
 end
 
 local function walkToGiftPathfinding(targetGift)
-    local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart")
+    local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart", true) or (targetGift.IsA and targetGift:IsA("Model") and targetGift.PrimaryPart)
     if not targetPart or targetPart.Position == Vector3.new(0,0,0) then return false end
     return walkToPositionPathfinding(targetPart.Position)
 end
@@ -1127,7 +1149,7 @@ local function moveToGift(targetGift)
     end
     local char = getChar(plr)
     local root = getRoot(char)
-    local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart")
+    local targetPart = targetGift:IsA("BasePart") and targetGift or targetGift:FindFirstChildWhichIsA("BasePart", true) or (targetGift.IsA and targetGift:IsA("Model") and targetGift.PrimaryPart)
     if not root or not targetPart or targetPart.Position == Vector3.new(0,0,0) then return nil end
     local targetCFrame = targetPart.CFrame + Vector3.new(0, 3, 0)
 
@@ -1387,7 +1409,7 @@ local function processAntiVoid()
             local targetPool = #availableNormalGifts > 0 and availableNormalGifts or availableGoldenGifts
             local gift = getClosestGift(targetPool)
             if gift then
-                local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart")
+                local part = gift:IsA("BasePart") and gift or gift:FindFirstChildWhichIsA("BasePart", true) or (gift.IsA and gift:IsA("Model") and gift.PrimaryPart)
                 if part then root.CFrame = part.CFrame + Vector3.new(0, 5, 0) end
             else
                 handleSpawnNavigation()
@@ -2077,9 +2099,9 @@ else
     local selectedPlayer = nil
     TeleportGroup:AddDropdown("TargetPlayerDropdown", { Text = "Select Player to TP", Values = getPlayerNames(), Default = 1, Callback = function(Value) selectedPlayer = Value end })
     TeleportGroup:AddButton({ Text = "Refresh Player List", Func = function() if Options and Options.TargetPlayerDropdown then Options.TargetPlayerDropdown:SetValues(getPlayerNames()) end end })
-    TeleportGroup:AddButton({ Text = "Teleport to Player", Func = function() if selectedPlayer then local targetPlr = Players:FindFirstChild(selectedPlayer) if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame; Library:Notify("Teleported to " .. selectedPlayer, 3) end end end })
+    TeleportGroup:AddButton({ Text = "Teleport to Player", Func = function() if selectedPlayer then local targetPlr = Players:FindFirstChild(selectedPlayer) if targetPlr and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then plr.Character.HumanoidRootPart.CFrame = targetPlr.Character.HumanoidRootPart.CFrame; Library:Notify("Teleported to " + selectedPlayer, 3) end end end })
     TeleportGroup:AddButton({ Text = "Rejoin Server", Func = function() TeleportService:TeleportToPlaceInstance(PlaceId, JobId, plr) end })
-    TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, server in ipairs(servers.data) do if server.playing < server.maxPlayers and server.id ~= JobId then TeleportService:TeleportToPlaceInstance(PlaceId, server.id, plr); return end end end Library:Notify("Failed to find a server.", 3) end })
+    TeleportGroup:AddButton({ Text = "Server Hop", Func = function() local success, servers = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" + PlaceId + "/servers/Public?sortOrder=Asc&limit=100")) end) if success and servers and servers.data then for _, server in ipairs(servers.data) do if server.playing < server.maxPlayers and server.id ~= JobId then TeleportService:TeleportToPlaceInstance(PlaceId, server.id, plr); return end end end Library:Notify("Failed to find a server.", 3) end })
 end
 
 --------------------------------------------------------------------
