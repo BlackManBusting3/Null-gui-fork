@@ -164,7 +164,12 @@ local currentObservedLevel = nil
 local targetVoidProcessing = false
 
 -- =====================================================================
--- DISCORD WEBHOOK SYSTEM  (FIXED + AUTO-SEND + SESSION INFO)
+-- **FORWARD DECLARATIONS** (must exist before webhook functions reference them)
+-- =====================================================================
+local activeUpgrades = {}
+
+-- =====================================================================
+-- DISCORD WEBHOOK SYSTEM  (FIXED: nil-guards + auto-send + session info)
 -- =====================================================================
 local Webhook = {
     URL = "",
@@ -290,6 +295,7 @@ end
 
 local function getActiveUpgradesList()
     local list = {}
+    if type(activeUpgrades) ~= "table" then return list end
     for name, val in pairs(activeUpgrades) do
         if val and val > 0 then table.insert(list, string.format("%s (%d)", name, val)) end
     end
@@ -433,7 +439,8 @@ local auto_destroy = {Bell=false,Mart=false,Skinwalker=false,Springer=false,ICBM
 
 local pt, pb, velov = false, false, false
 local connections = {}
-local activeUpgrades = {}
+-- activeUpgrades already forward-declared above; just keep the reference
+activeUpgrades = activeUpgrades or {}
 local upgradeValueGuards = {}
 local isSettingGuardValue = {}
 local blacklistedGifts = {}
@@ -594,7 +601,7 @@ task.spawn(function()
 end)
 
 -- =====================================================================
--- PLAYER EVENTS (death webhook here)
+-- PLAYER EVENTS
 -- =====================================================================
 local respawnCounter = 0
 local beaconFiredTime = 0
@@ -1608,7 +1615,7 @@ if isSupportedPlace then
 
     WCG:AddInput("WebhookURLInput", {
         Default = "",
-        Finished = true,   -- require Enter / blur so URL isn't captured mid-type
+        Finished = true,
         Text = "Discord Webhook URL",
         Placeholder = "https://discord.com/api/webhooks/...",
         Callback = function(Value)
