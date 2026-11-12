@@ -1365,16 +1365,32 @@ Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomso
 local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/ThemeManager.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua"))()
 
-local Loading = Library:CreateLoading({Title = "Null GUI - Java.", Icon = "7476151111", TotalSteps = 4})
+-- =====================================================================
+-- LOADING SCREEN  (Lucide "cat" icon)
+-- =====================================================================
+local Loading = Library:CreateLoading({
+    Title = "Null GUI - Java.",
+    Icon = "cat",                     -- Lucide "cat" icon (was numeric asset ID)
+    TotalSteps = 4,
+    ShowSidebar = true,
+})
+
 Loading:SetMessage("Initializing...")
 Loading:SetDescription("Checking environment...")
-Loading:SetCurrentStep(1); Loading:ShowSidebarPage(true)
+
+Loading:ShowSidebarPage(true)
 Loading.Sidebar:AddLabel("User: " .. plr.Name)
 Loading.Sidebar:AddLabel("Executor: " .. getExecutorName())
 Loading.Sidebar:AddLabel("Version: v1")
 Loading.Sidebar:AddLabel("Mode: " .. (isSupportedPlace and "Nullscape Gui" or "Universal Gui"))
-Loading:SetCurrentStep(2); Loading:SetCurrentStep(3)
-Loading:SetDescription("Script loaded successfully!"); Loading:SetCurrentStep(4); Loading:Continue()
+
+Loading:SetCurrentStep(1)
+Loading:SetCurrentStep(2)
+Loading:SetCurrentStep(3)
+
+Loading:SetDescription("Script loaded successfully!")
+Loading:SetCurrentStep(4)
+Loading:Continue()
 
 local Window = Library:CreateWindow({
     Title = "Java's Null Gui",
